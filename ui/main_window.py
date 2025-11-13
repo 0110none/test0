@@ -54,6 +54,16 @@ class MainWindow(QMainWindow):
         self.current_face_count = 0
         self.current_blurred_count = 0
 
+        # 模糊参数（范围与强度）
+        processing_cfg = self.config.get('processing', {})
+        self.blur_range_factor = float(processing_cfg.get('blur_range', 1.0))
+        if self.blur_range_factor <= 0:
+            self.blur_range_factor = 1.0
+
+        self.blur_strength_factor = float(processing_cfg.get('blur_strength', 1.0))
+        if self.blur_strength_factor < 0:
+            self.blur_strength_factor = 0.0
+
         # 加载已知人脸库
         self.face_detector.load_known_faces(config['app']['known_faces_dir'])
 
@@ -169,6 +179,40 @@ class MainWindow(QMainWindow):
         threshold_layout.addWidget(self.threshold_value)
         camera_layout.addLayout(threshold_layout)
 
+        blur_range_layout = QHBoxLayout()
+        blur_range_label = QLabel("模糊范围：")
+        blur_range_layout.addWidget(blur_range_label)
+
+        self.blur_range_slider = QSlider(Qt.Horizontal)
+        self.blur_range_slider.setRange(50, 250)
+        initial_range_value = int(self.blur_range_factor * 100)
+        initial_range_value = max(self.blur_range_slider.minimum(), min(self.blur_range_slider.maximum(), initial_range_value))
+        self.blur_range_slider.setValue(initial_range_value)
+        self.blur_range_slider.valueChanged.connect(self.update_blur_range)
+        blur_range_layout.addWidget(self.blur_range_slider)
+
+        self.blur_range_value = QLabel(f"{self.blur_range_slider.value() / 100:.2f}x")
+        blur_range_layout.addWidget(self.blur_range_value)
+        self.update_blur_range(self.blur_range_slider.value())
+        camera_layout.addLayout(blur_range_layout)
+
+        blur_strength_layout = QHBoxLayout()
+        blur_strength_label = QLabel("模糊强度：")
+        blur_strength_layout.addWidget(blur_strength_label)
+
+        self.blur_strength_slider = QSlider(Qt.Horizontal)
+        self.blur_strength_slider.setRange(0, 300)
+        initial_strength_value = int(self.blur_strength_factor * 100)
+        initial_strength_value = max(self.blur_strength_slider.minimum(), min(self.blur_strength_slider.maximum(), initial_strength_value))
+        self.blur_strength_slider.setValue(initial_strength_value)
+        self.blur_strength_slider.valueChanged.connect(self.update_blur_strength)
+        blur_strength_layout.addWidget(self.blur_strength_slider)
+
+        self.blur_strength_value = QLabel(f"{self.blur_strength_slider.value() / 100:.2f}x")
+        blur_strength_layout.addWidget(self.blur_strength_value)
+        self.update_blur_strength(self.blur_strength_slider.value())
+        camera_layout.addLayout(blur_strength_layout)
+
         layout.addWidget(camera_group)
 
         status_group = QGroupBox("系统状态")
@@ -213,6 +257,24 @@ class MainWindow(QMainWindow):
         threshold = value / 100
         self.face_detector.recognition_threshold = threshold
         self.threshold_value.setText(f"{threshold:.2f}")
+
+    def update_blur_range(self, value: int):
+        """调整模糊范围（扩大待模糊区域）"""
+        self.blur_range_factor = max(0.1, value / 100)
+        if 'processing' not in self.config:
+            self.config['processing'] = {}
+        self.config['processing']['blur_range'] = self.blur_range_factor
+        if hasattr(self, 'blur_range_value'):
+            self.blur_range_value.setText(f"{self.blur_range_factor:.2f}x")
+
+    def update_blur_strength(self, value: int):
+        """调整模糊强度（缩放高斯模糊核大小）"""
+        self.blur_strength_factor = max(0.0, value / 100)
+        if 'processing' not in self.config:
+            self.config['processing'] = {}
+        self.config['processing']['blur_strength'] = self.blur_strength_factor
+        if hasattr(self, 'blur_strength_value'):
+            self.blur_strength_value.setText(f"{self.blur_strength_factor:.2f}x")
 
     # ------------------------------
     # 主循环与图像处理
@@ -265,7 +327,10 @@ class MainWindow(QMainWindow):
             if known_face:
                 self._draw_known_face(processed_frame, clipped_bbox, known_face.name, confidence)
             else:
-                if self._blur_face_region(processed_frame, clipped_bbox):
+                expanded_bbox = self._expand_bbox(clipped_bbox, processed_frame.shape, self.blur_range_factor)
+                if expanded_bbox is None:
+                    expanded_bbox = clipped_bbox
+                if self._blur_face_region(processed_frame, expanded_bbox):
                     blurred_count += 1
 
         return processed_frame, len(faces), blurred_count
@@ -319,6 +384,9 @@ class MainWindow(QMainWindow):
         if face_region.size == 0:
             return False
 
+        if self.blur_strength_factor <= 0:
+            return False
+
         kernel = self._calculate_blur_kernel(x2 - x1, y2 - y1)
         try:
             blurred = cv2.GaussianBlur(face_region, (kernel, kernel), 0)
@@ -332,9 +400,38 @@ class MainWindow(QMainWindow):
         """根据人脸尺寸自适应计算高斯模糊核大小（保持为奇数）"""
         base = max(width, height) // 6
         kernel = max(15, base * 2 + 1)
-        if kernel % 2 == 0:
-            kernel += 1
-        return kernel
+        scaled_kernel = int(round(kernel * self.blur_strength_factor))
+        if scaled_kernel % 2 == 0:
+            scaled_kernel += 1
+        return max(3, scaled_kernel)
+
+    def _expand_bbox(
+        self,
+        bbox: Tuple[int, int, int, int],
+        frame_shape: Tuple[int, int, int],
+        factor: float,
+    ) -> Optional[Tuple[int, int, int, int]]:
+        """按指定倍率扩展人脸框并限制在图像范围内"""
+        if factor <= 1.0:
+            return bbox
+
+        x1, y1, x2, y2 = bbox
+        width = x2 - x1
+        height = y2 - y1
+        if width <= 0 or height <= 0:
+            return None
+
+        cx = x1 + width / 2
+        cy = y1 + height / 2
+        new_width = width * factor
+        new_height = height * factor
+
+        new_x1 = int(round(cx - new_width / 2))
+        new_y1 = int(round(cy - new_height / 2))
+        new_x2 = int(round(cx + new_width / 2))
+        new_y2 = int(round(cy + new_height / 2))
+
+        return self._clip_bbox((new_x1, new_y1, new_x2, new_y2), frame_shape)
 
     def display_frame(self, frame: np.ndarray):
         """将处理后的画面显示到摄像头窗口"""
@@ -372,6 +469,8 @@ class MainWindow(QMainWindow):
             status_text.append("\n=== 实时统计 ===")
             status_text.append(f"当前检测到的人脸数量：{self.current_face_count}")
             status_text.append(f"当前被模糊的人脸数量：{self.current_blurred_count}")
+            status_text.append(f"当前模糊范围倍率：{self.blur_range_factor:.2f}x")
+            status_text.append(f"当前模糊强度倍率：{self.blur_strength_factor:.2f}x")
 
             self.status_display.setText("\n".join(status_text))
 
