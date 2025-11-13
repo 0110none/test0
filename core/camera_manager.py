@@ -3,6 +3,7 @@ import numpy as np
 from typing import List, Dict, Optional, Tuple
 from dataclasses import dataclass
 from loguru import logger
+import math
 import time
 import threading
 import queue
@@ -120,6 +121,50 @@ class CameraManager:
         logger.info(f"摄像头 {cam_id} 已启动")
         return True
 
+    def add_video_source(self, file_path: str) -> Optional[int]:
+        """将本地视频文件作为新的摄像头输入添加并启动"""
+        try:
+            video_path = Path(file_path)
+            if not video_path.exists():
+                logger.error(f"视频文件不存在: {file_path}")
+                return None
+
+            cap = cv2.VideoCapture(str(video_path))
+            if not cap.isOpened():
+                logger.error(f"无法打开视频文件: {file_path}")
+                cap.release()
+                return None
+
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or 640
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or 480
+            fps = float(cap.get(cv2.CAP_PROP_FPS) or 0.0)
+            cap.release()
+
+            if fps <= 0 or math.isnan(fps):
+                fps = 30.0
+
+            new_id = max(self.cameras.keys(), default=-1) + 1
+            self.cameras[new_id] = CameraConfig(
+                id=new_id,
+                name=video_path.name,
+                source=str(video_path),
+                enabled=True,
+                width=width,
+                height=height,
+                fps=int(round(fps)),
+                rotate=0
+            )
+
+            if self.start_camera(new_id):
+                logger.info(f"已添加视频源 {file_path} 为摄像头 {new_id}")
+                return new_id
+
+            return None
+
+        except Exception as e:
+            logger.error(f"添加视频源失败: {e}")
+            return None
+
     def stop_camera(self, cam_id: int) -> bool:
         """停止单个摄像头"""
         if cam_id in self.capture_threads:
@@ -154,6 +199,10 @@ class CameraManager:
                 ret, frame = cap.read()
                 if not ret:
                     logger.warning(f"摄像头 {cam_id} 读取失败")
+                    source_path = self.cameras[cam_id].source
+                    if isinstance(source_path, str) and Path(source_path).exists():
+                        cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                        continue
                     time.sleep(1)
                     continue
 

@@ -1,15 +1,15 @@
 # -*- coding: utf-8 -*-
 
 """
-多摄像头人脸追踪系统
+多摄像头隐私保护人脸模糊系统
 --------------------------------
-主程序入口，用于启动人脸识别与追踪应用。
-初始化图形界面、摄像头流、人脸检测、识别、警报系统和数据库。
+主程序入口，用于启动实时摄像头/视频流的人脸检测与模糊应用。
+初始化图形界面、摄像头流、人脸检测与识别模块，并提供隐私保护显示。
 
 功能：
-- 多摄像头实时人脸检测与识别
-- 目标人脸匹配与警报提示
-- 事件记录（带时间戳与截图）
+- 多摄像头实时人脸检测
+- 已注册人脸识别与保留清晰画面
+- 陌生人脸自动模糊
 - 基于 PyQt5 的桌面图形界面
 
 """
@@ -27,13 +27,12 @@ from ui.main_window import MainWindow
 def load_config(config_path: str) -> dict:
     """
     从 YAML 文件加载配置
-    - 自动创建截图、人脸库、日志目录
+    - 自动创建人脸库、日志目录
     """
     try:
         with open(config_path, 'r') as f:
             config = yaml.safe_load(f)
 
-        Path(config['app']['screenshot_dir']).mkdir(parents=True, exist_ok=True)
         Path(config['app']['known_faces_dir']).mkdir(parents=True, exist_ok=True)
         Path(config['app']['log_dir']).mkdir(parents=True, exist_ok=True)
 
@@ -76,7 +75,7 @@ def show_splash_screen(config: dict) -> QSplashScreen:
         splash.setMask(splash_pix.mask())
 
         splash.showMessage(
-            "正在初始化人脸追踪系统...",
+            "正在初始化隐私保护系统...",
             Qt.AlignBottom | Qt.AlignCenter,
             Qt.white
         )
@@ -121,7 +120,6 @@ def main():
 
         def on_close():
             window.camera_manager.stop_all_cameras()
-            window.alert_system.shutdown()
             app.quit()
 
         app.aboutToQuit.connect(on_close)
