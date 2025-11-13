@@ -392,58 +392,71 @@ class MainWindow(QMainWindow):
         """统一设置应用的样式和色彩风格"""
         self.setStyleSheet("""
             QMainWindow {
-                background-color: #1f2233;
-                color: #f4f5f7;
+                background-color: #0f172a;
+                color: #e2e8f0;
             }
             QLabel {
-                color: #f4f5f7;
+                color: #e2e8f0;
             }
             QLabel#sectionTitle {
                 font-size: 20px;
                 font-weight: 600;
                 padding: 8px 0;
+                color: #93c5fd;
             }
             QLabel#cameraFeed {
-                background-color: #151724;
-                border-radius: 8px;
+                background-color: #1e293b;
+                border-radius: 12px;
+                border: 2px solid #1d4ed8;
             }
             QTabWidget::pane {
-                border: 1px solid #2b2f44;
-                border-radius: 6px;
+                border: 1px solid #1d4ed8;
+                border-radius: 10px;
+                background-color: #111c34;
             }
             QTabBar::tab {
-                padding: 10px 20px;
+                padding: 10px 24px;
                 background-color: transparent;
-                color: #d0d3dc;
+                color: #cbd5f5;
+                border-bottom: 2px solid transparent;
             }
             QTabBar::tab:selected {
-                background-color: #2b2f44;
-                border-top-left-radius: 6px;
-                border-top-right-radius: 6px;
+                background-color: #1e3a8a;
+                border-top-left-radius: 8px;
+                border-top-right-radius: 8px;
                 color: #ffffff;
+                border-bottom: 2px solid #60a5fa;
             }
             QPushButton {
-                background-color: #3a3f5c;
-                border-radius: 6px;
-                padding: 8px 16px;
+                background-color: qlineargradient(spread:pad, x1:0, y1:0, x2:0, y2:1, stop:0 #2563eb, stop:1 #1e40af);
+                border: 2px solid #60a5fa;
+                border-radius: 10px;
+                padding: 10px 20px;
                 color: #ffffff;
+                font-weight: 600;
             }
             QPushButton:hover {
-                background-color: #50567a;
+                background-color: qlineargradient(spread:pad, x1:0, y1:0, x2:0, y2:1, stop:0 #3b82f6, stop:1 #1d4ed8);
+                border: 2px solid #93c5fd;
             }
             QPushButton:pressed {
-                background-color: #2d324c;
+                background-color: qlineargradient(spread:pad, x1:0, y1:0, x2:0, y2:1, stop:0 #1d4ed8, stop:1 #1e3a8a);
+                border: 2px solid #3b82f6;
+                padding-top: 12px;
+                padding-bottom: 8px;
             }
             QGroupBox {
-                border: 1px solid #2b2f44;
-                border-radius: 8px;
+                border: 1px solid #1d4ed8;
+                border-radius: 12px;
                 margin-top: 12px;
-                padding: 12px;
+                padding: 16px;
                 font-weight: 600;
+                background-color: rgba(30, 64, 175, 0.35);
             }
             QGroupBox::title {
                 subcontrol-origin: margin;
                 subcontrol-position: top left;
-                padding: 0 6px;
+                padding: 0 10px;
+                color: #bfdbfe;
             }
         """)
