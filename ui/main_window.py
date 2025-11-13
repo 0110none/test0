@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 
 import sys
-from typing import Dict, Optional, Tuple
+from typing import Optional, Tuple
 
 import cv2
 import numpy as np
@@ -17,13 +17,7 @@ from PyQt5.QtWidgets import (
     QLabel,
     QPushButton,
     QTabWidget,
-    QScrollArea,
-    QGridLayout,
-    QMessageBox,
-    QFileDialog,
-    QComboBox,
     QSlider,
-    QFrame,
     QGroupBox,
 )
 
@@ -126,105 +120,17 @@ class MainWindow(QMainWindow):
         monitor_tab = QWidget()
         self.tab_widget.addTab(monitor_tab, "监控")
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-
-        # 摄像头画面容器
-        self.camera_container = QWidget()
-        self.camera_grid = QGridLayout(self.camera_container)
-        self.camera_grid.setSpacing(10)
-        scroll.setWidget(self.camera_container)
-
         layout = QVBoxLayout(monitor_tab)
         title = QLabel("实时监控")
         title.setObjectName("sectionTitle")
         title.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         layout.addWidget(title)
-        layout.addWidget(scroll)
 
-        # 为每个摄像头添加显示区域
-        self.camera_labels: Dict[int, QLabel] = {}
-        self.camera_cards = []
-        for cam_id in sorted(self.camera_manager.cameras.keys()):
-            self.add_camera_display(cam_id)
-
-    def add_camera_display(self, cam_id: int):
-        """为指定摄像头创建显示卡片"""
-        if cam_id in self.camera_labels:
-            return
-
-        cam_config = self.camera_manager.cameras.get(cam_id)
-        if cam_config is None:
-            return
-
-        card = QFrame()
-        card.setObjectName("cameraCard")
-        card_layout = QVBoxLayout(card)
-        card_layout.setContentsMargins(12, 12, 12, 12)
-        card_layout.setSpacing(8)
-
-        header = QLabel(cam_config.name)
-        header.setAlignment(Qt.AlignCenter)
-        header.setObjectName("cameraTitle")
-        card_layout.addWidget(header)
-
-        label = QLabel()
-        label.setAlignment(Qt.AlignCenter)
-        label.setMinimumSize(360, 220)
-        label.setObjectName("cameraFeed")
-        card_layout.addWidget(label)
-
-        self.camera_labels[cam_id] = label
-        self.camera_cards.append(card)
-
-        index = len(self.camera_cards) - 1
-        row = index // 2
-        col = index % 2
-        self.camera_grid.addWidget(card, row, col)
-
-    def refresh_camera_combo(self):
-        """刷新摄像头下拉框内容"""
-        if not hasattr(self, 'camera_combo'):
-            return
-
-        current_id = self.camera_combo.currentData() if self.camera_combo.count() else None
-        self.camera_combo.blockSignals(True)
-        self.camera_combo.clear()
-
-        for cam_id in sorted(self.camera_manager.cameras.keys()):
-            cam_config = self.camera_manager.cameras[cam_id]
-            self.camera_combo.addItem(f"摄像头 {cam_id}: {cam_config.name}", cam_id)
-
-        self.camera_combo.blockSignals(False)
-
-        if current_id is not None:
-            index = self.camera_combo.findData(current_id)
-            if index != -1:
-                self.camera_combo.setCurrentIndex(index)
-
-        if self.camera_combo.count() > 0 and self.camera_combo.currentIndex() == -1:
-            self.camera_combo.setCurrentIndex(0)
-
-    def add_video_source(self):
-        """选择并添加本地视频文件作为新的监控源"""
-        file_path, _ = QFileDialog.getOpenFileName(
-            self,
-            "选择视频文件",
-            "",
-            "视频文件 (*.mp4 *.avi *.mov *.mkv *.flv *.wmv);;所有文件 (*)",
-        )
-
-        if not file_path:
-            return
-
-        new_id = self.camera_manager.add_video_source(file_path)
-        if new_id is None:
-            QMessageBox.warning(self, "错误", "无法加载所选视频文件")
-            return
-
-        self.add_camera_display(new_id)
-        self.refresh_camera_combo()
-        self.status_label.setText(f"已添加视频源: {file_path}")
+        self.camera_label = QLabel()
+        self.camera_label.setAlignment(Qt.AlignCenter)
+        self.camera_label.setMinimumSize(640, 360)
+        self.camera_label.setObjectName("cameraFeed")
+        layout.addWidget(self.camera_label, 1)
 
     def setup_controls_tab(self):
         """控制界面：用于调节识别阈值、处理间隔、摄像头启停等"""
@@ -232,30 +138,23 @@ class MainWindow(QMainWindow):
         self.tab_widget.addTab(controls_tab, "控制")
         layout = QVBoxLayout(controls_tab)
 
-        # 摄像头控制区
         camera_group = QGroupBox("摄像头控制")
         camera_layout = QVBoxLayout(camera_group)
         camera_layout.setSpacing(12)
 
-        self.camera_combo = QComboBox()
-        camera_layout.addWidget(self.camera_combo)
-        self.refresh_camera_combo()
+        camera_name = self.camera_manager.camera.name if self.camera_manager.camera else "未配置摄像头"
+        name_label = QLabel(f"当前摄像头：{camera_name}")
+        camera_layout.addWidget(name_label)
 
-        # 启动/停止按钮
         btn_layout = QHBoxLayout()
         self.start_btn = QPushButton("启动摄像头")
-        self.start_btn.clicked.connect(self.start_selected_camera)
+        self.start_btn.clicked.connect(self.start_camera_stream)
         btn_layout.addWidget(self.start_btn)
         self.stop_btn = QPushButton("停止摄像头")
-        self.stop_btn.clicked.connect(self.stop_selected_camera)
+        self.stop_btn.clicked.connect(self.stop_camera_stream)
         btn_layout.addWidget(self.stop_btn)
         camera_layout.addLayout(btn_layout)
 
-        self.add_video_btn = QPushButton("添加视频文件")
-        self.add_video_btn.clicked.connect(self.add_video_source)
-        camera_layout.addWidget(self.add_video_btn)
-
-        # 识别阈值控制
         threshold_layout = QHBoxLayout()
         threshold_label = QLabel("识别阈值：")
         threshold_layout.addWidget(threshold_label)
@@ -272,7 +171,6 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(camera_group)
 
-        # 系统状态显示
         status_group = QGroupBox("系统状态")
         status_layout = QVBoxLayout(status_group)
         status_layout.setSpacing(8)
@@ -300,21 +198,15 @@ class MainWindow(QMainWindow):
     # ------------------------------
     # 摄像头控制与参数调节
     # ------------------------------
-    def start_selected_camera(self):
-        """启动所选摄像头"""
-        cam_id = self.camera_combo.currentData()
-        if cam_id is None:
-            return
-        if self.camera_manager.start_camera(cam_id):
-            self.status_label.setText(f"已启动摄像头 {cam_id}")
+    def start_camera_stream(self):
+        """启动摄像头"""
+        if self.camera_manager.start_camera():
+            self.status_label.setText("摄像头已启动")
 
-    def stop_selected_camera(self):
-        """停止所选摄像头"""
-        cam_id = self.camera_combo.currentData()
-        if cam_id is None:
-            return
-        if self.camera_manager.stop_camera(cam_id):
-            self.status_label.setText(f"已停止摄像头 {cam_id}")
+    def stop_camera_stream(self):
+        """停止摄像头"""
+        self.camera_manager.stop_camera()
+        self.status_label.setText("摄像头已停止")
 
     def update_threshold(self, value):
         """调整识别置信度阈值"""
@@ -328,22 +220,15 @@ class MainWindow(QMainWindow):
     def update(self):
         """主循环（每30ms执行一次）：获取帧→识别→模糊→显示→更新状态"""
         try:
-            frames = self.camera_manager.get_all_frames()
+            frame = self.camera_manager.get_frame()
             total_faces = 0
             total_blurred = 0
 
-            for cam_id, frame in frames.items():
-                if frame is None:
-                    continue
-
-                if cam_id not in self.camera_labels:
-                    self.add_camera_display(cam_id)
-                    self.refresh_camera_combo()
-
-                processed_frame, face_count, blurred_count = self.process_frame(cam_id, frame)
+            if frame is not None:
+                processed_frame, face_count, blurred_count = self.process_frame(frame)
                 total_faces += face_count
                 total_blurred += blurred_count
-                self.display_frame(cam_id, processed_frame)
+                self.display_frame(processed_frame)
 
             self.current_face_count = total_faces
             self.current_blurred_count = total_blurred
@@ -356,14 +241,14 @@ class MainWindow(QMainWindow):
             logger.error(f"更新循环错误: {e}")
             self.status_label.setText(f"错误: {str(e)}")
 
-    def process_frame(self, cam_id: int, frame: np.ndarray) -> Tuple[np.ndarray, int, int]:
+    def process_frame(self, frame: np.ndarray) -> Tuple[np.ndarray, int, int]:
         """检测并处理一帧画面，返回处理结果及统计信息"""
         processed_frame = frame.copy()
 
         try:
             faces = self.face_detector.detect_faces(frame)
         except Exception as e:
-            logger.error(f"摄像头 {cam_id} 检测人脸失败: {e}")
+            logger.error(f"检测人脸失败: {e}")
             return processed_frame, 0, 0
 
         if not faces:
@@ -451,25 +336,20 @@ class MainWindow(QMainWindow):
             kernel += 1
         return kernel
 
-    def display_frame(self, cam_id: int, frame: np.ndarray):
-        """将处理后的画面显示到对应摄像头窗口"""
+    def display_frame(self, frame: np.ndarray):
+        """将处理后的画面显示到摄像头窗口"""
         try:
             if frame is None:
                 return
             pixmap = numpy_to_pixmap(frame)
             if pixmap is None:
                 return
-            if cam_id not in self.camera_labels:
-                self.add_camera_display(cam_id)
-            target_label = self.camera_labels.get(cam_id)
-            if target_label is None:
-                return
             scaled = pixmap.scaled(
-                target_label.size(),
+                self.camera_label.size(),
                 Qt.KeepAspectRatio,
                 Qt.SmoothTransformation
             )
-            target_label.setPixmap(scaled)
+            self.camera_label.setPixmap(scaled)
         except Exception as e:
             logger.error(f"显示帧错误: {e}")
 
@@ -478,19 +358,17 @@ class MainWindow(QMainWindow):
         try:
             status_text = []
 
-            # 摄像头状态
             status_text.append("=== 摄像头状态 ===")
-            for cam_id, cam_config in self.camera_manager.cameras.items():
-                running = cam_id in self.camera_manager.capture_threads
-                status_text.append(
-                    f"摄像头 {cam_id}（{cam_config.name}）：{'运行中' if running else '已停止'}"
-                )
+            camera_status = self.camera_manager.get_camera_status()
+            if camera_status:
+                running = '运行中' if camera_status['running'] else '已停止'
+                status_text.append(f"{camera_status['name']}：{running}")
+            else:
+                status_text.append("未加载摄像头配置")
 
-            # 已知人脸状态
             status_text.append("\n=== 人脸库 ===")
             status_text.append(f"已知人脸数量：{len(self.face_detector.known_faces)}")
 
-            # 实时模糊统计
             status_text.append("\n=== 实时统计 ===")
             status_text.append(f"当前检测到的人脸数量：{self.current_face_count}")
             status_text.append(f"当前被模糊的人脸数量：{self.current_blurred_count}")
@@ -524,10 +402,6 @@ class MainWindow(QMainWindow):
                 font-size: 20px;
                 font-weight: 600;
                 padding: 8px 0;
-            }
-            QLabel#cameraTitle {
-                font-size: 16px;
-                font-weight: 600;
             }
             QLabel#cameraFeed {
                 background-color: #151724;
@@ -571,13 +445,5 @@ class MainWindow(QMainWindow):
                 subcontrol-origin: margin;
                 subcontrol-position: top left;
                 padding: 0 6px;
-            }
-            QScrollArea {
-                border: none;
-            }
-            QFrame#cameraCard {
-                background-color: #24283d;
-                border-radius: 12px;
-                border: 1px solid rgba(255, 255, 255, 0.05);
             }
         """)
