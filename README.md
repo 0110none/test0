@@ -80,7 +80,6 @@ app:
 recognition:
   detection_threshold: 0.5
   recognition_threshold: 0.6
-  max_batch_size: 8
   device: "cuda"  # or "cpu"
   analysis_enabled: true
 ```
