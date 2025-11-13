@@ -1,16 +1,13 @@
 # -*- coding: utf-8 -*-
 
-import os
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QListWidget, QPushButton,
-                             QLabel, QFileDialog, QMessageBox, QLineEdit, QComboBox)
+                             QLabel, QFileDialog, QMessageBox, QLineEdit)
 from PyQt5.QtCore import Qt
-from PyQt5.QtGui import QPixmap
 from loguru import logger
 import cv2
-import numpy as np
 from pathlib import Path
 
-from core.utils import numpy_to_pixmap, resize_image
+from core.utils import numpy_to_pixmap
 
 
 class FaceManagerDialog(QDialog):

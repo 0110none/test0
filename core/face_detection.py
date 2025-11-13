@@ -1,13 +1,9 @@
-import os
 import cv2
 import numpy as np
-import insightface
 from insightface.app import FaceAnalysis
-from insightface.data import get_image as ins_get_image
 from loguru import logger
-from typing import List, Dict, Tuple, Optional
+from typing import List, Tuple, Optional
 from dataclasses import dataclass
-from PIL import Image
 from pathlib import Path
 import time
 # -*- coding: utf-8 -*-
@@ -37,7 +33,6 @@ class FaceDetector:
         self.config = config
         self.recognition_threshold = config['recognition']['recognition_threshold']  # 识别阈值
         self.detection_threshold = config['recognition']['detection_threshold']      # 检测阈值
-        self.max_batch_size = config['recognition']['max_batch_size']
         self.device = config['recognition']['device']                               # CPU / GPU
         self.analysis_enabled = config['recognition'].get('analysis_enabled', True) # 是否启用年龄性别分析
         self.model = self._load_model()   # 加载 InsightFace 模型
