@@ -11,3 +11,6 @@ recognition:
   max_batch_size: 8
   device: "cuda"  # or "cpu"
   analysis_enabled: true  # Enable age/gender estimation when supported
+
+processing:
+  blur_strength: 1.0  # 0.5~2.0，控制模糊范围倍率
