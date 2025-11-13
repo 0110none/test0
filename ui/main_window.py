@@ -4,19 +4,19 @@ import sys
 import time
 from PyQt5.QtWidgets import (QMainWindow, QApplication, QWidget, QVBoxLayout, QHBoxLayout,
                              QLabel, QPushButton, QTabWidget, QScrollArea, QGridLayout,
-                             QMessageBox, QFileDialog, QComboBox, QSlider, QSpinBox)
+                             QMessageBox, QFileDialog, QComboBox, QSlider, QSpinBox,
+                             QFrame, QGroupBox)
 from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtGui import QPixmap, QIcon
+from PyQt5.QtGui import QIcon
 from loguru import logger
 from typing import Dict, Tuple
 import numpy as np
-import cv2
-from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, Future
 
 # 导入核心模块
 from core.face_detection import FaceDetector
 from core.camera_manager import CameraManager
-from core.alert_system import AlertEvent, AlertSystem
+from core.alert_system import AlertSystem
 from core.database import FaceDatabase
 from core.utils import numpy_to_pixmap, draw_face_info
 
@@ -49,6 +49,11 @@ class MainWindow(QMainWindow):
         self.camera_manager = CameraManager('config/camera_config.yaml')  # 摄像头管理模块
         self.alert_system = AlertSystem(config)                            # 告警模块
         self.database = FaceDatabase(config['app']['database_path'])       # 数据库模块
+
+        max_workers = max(1, len(self.camera_manager.cameras))
+        self.executor = ThreadPoolExecutor(max_workers=max_workers)
+        self.processing_futures: Dict[int, Future] = {}
+        self.latest_processed_frames: Dict[int, np.ndarray] = {}
 
         # 加载已知人脸库
         self.face_detector.load_known_faces(config['app']['known_faces_dir'])
@@ -93,6 +98,9 @@ class MainWindow(QMainWindow):
         # 菜单栏
         self.setup_menu_bar()
 
+        # 统一应用样式
+        self.apply_styles()
+
     def setup_menu_bar(self):
         """创建菜单栏（文件、工具、视图）"""
         menubar = self.menuBar()
@@ -129,16 +137,34 @@ class MainWindow(QMainWindow):
         scroll.setWidget(self.camera_container)
 
         layout = QVBoxLayout(monitor_tab)
+        title = QLabel("实时监控")
+        title.setObjectName("sectionTitle")
+        title.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        layout.addWidget(title)
         layout.addWidget(scroll)
 
         # 为每个摄像头添加显示区域
         self.camera_labels = {}
         for cam_id in self.camera_manager.cameras:
+            card = QFrame()
+            card.setObjectName("cameraCard")
+            card_layout = QVBoxLayout(card)
+            card_layout.setContentsMargins(12, 12, 12, 12)
+            card_layout.setSpacing(8)
+
+            header = QLabel(self.camera_manager.cameras[cam_id].name)
+            header.setAlignment(Qt.AlignCenter)
+            header.setObjectName("cameraTitle")
+            card_layout.addWidget(header)
+
             label = QLabel()
             label.setAlignment(Qt.AlignCenter)
-            label.setMinimumSize(400, 300)
+            label.setMinimumSize(360, 220)
+            label.setObjectName("cameraFeed")
             self.camera_labels[cam_id] = label
-            self.camera_grid.addWidget(label, (cam_id // 2), (cam_id % 2))
+            card_layout.addWidget(label)
+
+            self.camera_grid.addWidget(card, (cam_id // 2), (cam_id % 2))
 
     def setup_controls_tab(self):
         """控制界面：用于调节识别阈值、处理间隔、摄像头启停等"""
@@ -147,9 +173,9 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(controls_tab)
 
         # 摄像头控制区
-        camera_group = QWidget()
+        camera_group = QGroupBox("摄像头控制")
         camera_layout = QVBoxLayout(camera_group)
-        camera_layout.addWidget(QLabel("摄像头控制", alignment=Qt.AlignCenter))
+        camera_layout.setSpacing(12)
 
         self.camera_combo = QComboBox()
         for cam_id, cam_config in self.camera_manager.cameras.items():
@@ -184,7 +210,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(camera_group)
 
         # 处理间隔控制
-        interval_group = QWidget()
+        interval_group = QGroupBox("处理参数")
         interval_layout = QHBoxLayout(interval_group)
         interval_layout.addWidget(QLabel("处理间隔（毫秒）："))
         self.interval_spin = QSpinBox()
@@ -195,9 +221,9 @@ class MainWindow(QMainWindow):
         layout.addWidget(interval_group)
 
         # 系统状态显示
-        status_group = QWidget()
+        status_group = QGroupBox("系统状态")
         status_layout = QVBoxLayout(status_group)
-        status_layout.addWidget(QLabel("系统状态", alignment=Qt.AlignCenter))
+        status_layout.setSpacing(8)
         self.status_display = QLabel("正在加载状态...")
         self.status_display.setWordWrap(True)
         status_layout.addWidget(self.status_display)
@@ -267,13 +293,26 @@ class MainWindow(QMainWindow):
 
                 current_time = time.time()
                 last_time = self.last_processed.get(cam_id, 0)
-                if current_time - last_time < self.processing_interval:
-                    self.display_frame(cam_id, frame)
-                    continue
+                future = self.processing_futures.get(cam_id)
 
-                processed_frame, _ = self.process_frame(cam_id, frame)
-                self.display_frame(cam_id, processed_frame)
-                self.last_processed[cam_id] = current_time
+                if future and future.done():
+                    try:
+                        processed_frame, _ = future.result()
+                        self.latest_processed_frames[cam_id] = processed_frame
+                    except Exception as e:
+                        logger.error(f"摄像头 {cam_id} 处理结果获取失败: {e}")
+                    finally:
+                        self.processing_futures[cam_id] = None
+
+                display_frame = self.latest_processed_frames.get(cam_id, frame)
+                self.display_frame(cam_id, display_frame)
+
+                if (current_time - last_time >= self.processing_interval and
+                        (self.processing_futures.get(cam_id) is None)):
+                    self.processing_futures[cam_id] = self.executor.submit(
+                        self.process_frame, cam_id, frame.copy()
+                    )
+                    self.last_processed[cam_id] = current_time
 
             self.update_status()
 
@@ -380,7 +419,15 @@ class MainWindow(QMainWindow):
             if frame is None:
                 return
             pixmap = numpy_to_pixmap(frame)
-            self.camera_labels[cam_id].setPixmap(pixmap)
+            if pixmap is None:
+                return
+            target_label = self.camera_labels[cam_id]
+            scaled = pixmap.scaled(
+                target_label.size(),
+                Qt.KeepAspectRatio,
+                Qt.SmoothTransformation
+            )
+            target_label.setPixmap(scaled)
         except Exception as e:
             logger.error(f"显示帧错误: {e}")
 
@@ -424,7 +471,80 @@ class MainWindow(QMainWindow):
         try:
             self.camera_manager.stop_all_cameras()
             self.update_timer.stop()
+            self.executor.shutdown(wait=False)
             event.accept()
         except Exception as e:
             logger.error(f"关闭程序时出错: {e}")
             event.accept()
+
+    def apply_styles(self):
+        """统一设置应用的样式和色彩风格"""
+        self.setStyleSheet("""
+            QMainWindow {
+                background-color: #1f2233;
+                color: #f4f5f7;
+            }
+            QLabel {
+                color: #f4f5f7;
+            }
+            QLabel#sectionTitle {
+                font-size: 20px;
+                font-weight: 600;
+                padding: 8px 0;
+            }
+            QLabel#cameraTitle {
+                font-size: 16px;
+                font-weight: 600;
+            }
+            QLabel#cameraFeed {
+                background-color: #151724;
+                border-radius: 8px;
+            }
+            QTabWidget::pane {
+                border: 1px solid #2b2f44;
+                border-radius: 6px;
+            }
+            QTabBar::tab {
+                padding: 10px 20px;
+                background-color: transparent;
+                color: #d0d3dc;
+            }
+            QTabBar::tab:selected {
+                background-color: #2b2f44;
+                border-top-left-radius: 6px;
+                border-top-right-radius: 6px;
+                color: #ffffff;
+            }
+            QPushButton {
+                background-color: #3a3f5c;
+                border-radius: 6px;
+                padding: 8px 16px;
+                color: #ffffff;
+            }
+            QPushButton:hover {
+                background-color: #50567a;
+            }
+            QPushButton:pressed {
+                background-color: #2d324c;
+            }
+            QGroupBox {
+                border: 1px solid #2b2f44;
+                border-radius: 8px;
+                margin-top: 12px;
+                padding: 12px;
+                font-weight: 600;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                subcontrol-position: top left;
+                padding: 0 6px;
+            }
+            QScrollArea {
+                border: none;
+            }
+            QFrame#cameraCard {
+                background-color: #24283d;
+                border-radius: 12px;
+                border: 1px solid rgba(255, 255, 255, 0.05);
+            }
+        """)
