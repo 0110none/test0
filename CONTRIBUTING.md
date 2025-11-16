@@ -1,6 +1,6 @@
-# Contribution Guidelines for Multi-Camera Face Tracker
+# Contribution Guidelines for Single-Camera Face Privacy
 
-Thank you for considering contributing to our project! This document outlines the process for contributing to the Multi-Camera Face Tracker system.
+Thank you for considering contributing to our project! This document outlines the process for contributing to the Single-Camera Face Privacy system.
 
 ## 🏁 Getting Started
 
