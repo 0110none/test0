@@ -67,7 +67,7 @@ class MainWindow(QMainWindow):
         self.init_ui()
 
         # 启动摄像头线程
-        self.camera_manager.start_all_cameras()
+        self.camera_manager.start_camera()
 
         # 启动定时更新器（刷新画面）
         self.update_timer = QTimer(self)
@@ -414,7 +414,7 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         """程序退出时释放资源：停止摄像头、定时器"""
         try:
-            self.camera_manager.stop_all_cameras()
+            self.camera_manager.stop_camera()
             self.update_timer.stop()
             event.accept()
         except Exception as e:

@@ -76,14 +76,6 @@ class CameraManager:
             logger.error(f"加载摄像头配置失败: {e}")
             raise
 
-    def start_all_cameras(self) -> None:
-        """兼容旧接口，启动单个摄像头"""
-        self.start_camera()
-
-    def stop_all_cameras(self) -> None:
-        """兼容旧接口，停止单个摄像头"""
-        self.stop_camera()
-
     def start_camera(self) -> bool:
         """启动摄像头"""
         if self.camera is None:

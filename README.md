@@ -1,20 +1,20 @@
-# Multi-Camera Face Privacy System 🔒
+# Single-Camera Face Privacy System 🔒
 
-A privacy-focused upgrade of the original multi-camera face tracking application. The system now performs per-frame face detection across multiple live streams or uploaded videos, keeps registered faces clear, and automatically blurs unrecognized faces before displaying them in the user interface.
+A privacy-focused desktop application that processes **one** live video source at a time. The system performs per-frame face detection on the configured webcam or video file, keeps registered faces clear, and automatically blurs unrecognized faces before displaying them in the user interface.
 
 ## 🌟 Key Features
 
 ### Core Capabilities
 - **Real-Time Privacy Protection** – Every frame is analysed and unknown faces are blurred instantly (Gaussian blur).
 - **Selective Visibility** – Registered faces remain sharp for monitoring and analysis.
-- **Multi-Source Input** – Monitor local webcams, RTSP streams, or add video files dynamically from the control panel.
+- **Single-Source Input** – Point the app at exactly one webcam, RTSP stream, or video file defined in the config file.
 - **Live Statistics** – Status panel reports the number of detected faces and how many are currently blurred.
 - **Per-Frame Processing** – Detection and recognition run on each frame with no throttling interval.
 
 ### User Experience
-- 🖥️ **Monitoring Dashboard** – View all camera feeds in real time with privacy filtering applied.
+- 🖥️ **Monitoring Dashboard** – View the configured camera feed in real time with privacy filtering applied.
 - 👤 **Face Management** – Upload and manage the known face library directly in the UI.
-- 🎛️ **Camera Controls** – Start/stop feeds, adjust recognition threshold, and add new video sources on the fly.
+- 🎛️ **Camera Controls** – Start/stop the stream, and adjust recognition/blur thresholds without editing code.
 
 ## 🛠️ Technical Stack
 
@@ -54,7 +54,7 @@ A privacy-focused upgrade of the original multi-camera face tracking application
 
 4. **Configure the system**
    - Edit `config/config.yaml` for application settings
-   - Edit `config/camera_config.yaml` for camera/stream configuration
+   - Edit `config/camera_config.yaml` for the single camera/stream configuration
 
 5. **Directory setup**
    ```bash
@@ -86,19 +86,19 @@ recognition:
 
 ### Camera Configuration (`config/camera_config.yaml`)
 ```yaml
-cameras:
-  - id: 0
-    name: "Front Camera"
-    source: 0                  # Camera index or RTSP URL
-    enabled: true
-    resolution:
-      width: 1280
-      height: 720
-    fps: 30
-    rotate: 0
+camera:
+  id: 0
+  name: "Front Camera"
+  source: 0                  # Camera index, RTSP URL, or path to a video file
+  enabled: true
+  resolution:
+    width: 1280
+    height: 720
+  fps: 30
+  rotate: 0
 ```
 
-> ℹ️ You can add additional cameras here or attach a video file at runtime from the **控制** tab using the “添加视频文件” button.
+> ℹ️ Only one camera definition is honoured. Change the `source` value if you want to switch to another device or file.
 
 ## 🖥️ User Manual
 
@@ -107,20 +107,19 @@ cameras:
 2. Import a clear photo and assign a name (duplicate names are prevented).
 3. Save to refresh the recognition library immediately.
 
-### Working with Camera Feeds
-- Use the drop-down list in the **控制** tab to select a camera.
-- Press **启动摄像头** or **停止摄像头** to control the stream.
-- Click **添加视频文件** to select a local video; it will appear as a new feed card automatically.
+### Working with the Camera Feed
+- Press **启动摄像头** or **停止摄像头** in the **控制** tab to control the single configured stream.
 - Adjust the recognition threshold slider to fine-tune matching sensitivity.
+- Modify `config/camera_config.yaml` if you need to change to a different device or video file, then restart the app.
 
 ### Monitoring & Status
-- The **监控** tab displays all streams with blurred strangers and annotated known faces.
+- The **监控** tab displays the single stream with blurred strangers and annotated known faces.
 - The status panel summarises:
-  - Current camera run states
+  - Current camera run state
   - Number of registered faces in the library
   - Real-time counts of detected faces and blurred faces
 
 ## 📚 Additional Notes
-- The application performs detection and blur operations on every frame; ensure adequate hardware for multiple high-resolution streams.
+- The application performs detection and blur operations on every frame; ensure adequate hardware for sustained real-time processing of your chosen resolution.
 - Logs are written to the directory defined by `app.log_dir` for troubleshooting.
 - Screenshots, alerts, Telegram notifications, and database history have been removed to focus on privacy-first monitoring.

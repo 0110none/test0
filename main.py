@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
 
 """
-多摄像头隐私保护人脸模糊系统
+单摄像头隐私保护人脸模糊系统
 --------------------------------
 主程序入口，用于启动实时摄像头/视频流的人脸检测与模糊应用。
 初始化图形界面、摄像头流、人脸检测与识别模块，并提供隐私保护显示。
 
 功能：
-- 多摄像头实时人脸检测
+- 单摄像头实时人脸检测
 - 已注册人脸识别与保留清晰画面
 - 陌生人脸自动模糊
 - 基于 PyQt5 的桌面图形界面
@@ -119,7 +119,7 @@ def main():
         logger.info("程序启动成功")
 
         def on_close():
-            window.camera_manager.stop_all_cameras()
+            window.camera_manager.stop_camera()
             app.quit()
 
         app.aboutToQuit.connect(on_close)
