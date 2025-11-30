@@ -18,6 +18,8 @@ from PyQt5.QtWidgets import (
     QPushButton,
     QSlider,
     QGroupBox,
+    QRadioButton,
+    QButtonGroup,
 )
 
 # 导入核心模块
@@ -52,12 +54,15 @@ class MainWindow(QMainWindow):
         # 实时统计信息
         self.current_face_count = 0
         self.current_blurred_count = 0
+        self.frame_delay_threshold_s = 2.0
+        self.frame_loss_threshold = 5
 
         # 模糊强度（用于控制高斯模糊范围）
         processing_cfg = self.config.get('processing', {})
         self.blur_strength_factor = float(processing_cfg.get('blur_strength', 1.0))
         if self.blur_strength_factor <= 0:
             self.blur_strength_factor = 1.0
+        self.blur_shape = processing_cfg.get('blur_shape', 'rectangle')
 
         # 加载已知人脸库
         self.face_detector.load_known_faces(config['app']['known_faces_dir'])
@@ -207,6 +212,22 @@ class MainWindow(QMainWindow):
         self.update_blur_strength(self.blur_slider.value())
         process_layout.addLayout(blur_layout)
 
+        shape_layout = QHBoxLayout()
+        shape_label = QLabel("模糊形状：")
+        shape_layout.addWidget(shape_label)
+        self.blur_shape_group = QButtonGroup(self)
+        self.rect_radio = QRadioButton("矩形")
+        self.ellipse_radio = QRadioButton("椭圆")
+        self.blur_shape_group.addButton(self.rect_radio)
+        self.blur_shape_group.addButton(self.ellipse_radio)
+        shape_layout.addWidget(self.rect_radio)
+        shape_layout.addWidget(self.ellipse_radio)
+        shape_layout.addStretch(1)
+        self.rect_radio.setChecked(self.blur_shape != 'ellipse')
+        self.ellipse_radio.setChecked(self.blur_shape == 'ellipse')
+        self.blur_shape_group.buttonClicked.connect(self.update_blur_shape)
+        process_layout.addLayout(shape_layout)
+
         return process_group
 
     def _build_status_board(self) -> QGroupBox:
@@ -262,6 +283,13 @@ class MainWindow(QMainWindow):
             self.config['processing'] = {}
         self.config['processing']['blur_strength'] = self.blur_strength_factor
         self.blur_value.setText(f"{self.blur_strength_factor:.2f}x")
+
+    def update_blur_shape(self, _button=None):
+        """切换模糊形状（矩形/椭圆）"""
+        self.blur_shape = 'ellipse' if self.ellipse_radio.isChecked() else 'rectangle'
+        if 'processing' not in self.config:
+            self.config['processing'] = {}
+        self.config['processing']['blur_shape'] = self.blur_shape
 
     # ------------------------------
     # 主循环与图像处理
@@ -370,8 +398,17 @@ class MainWindow(QMainWindow):
 
         kernel = self._calculate_blur_kernel(x2 - x1, y2 - y1)
         try:
-            blurred = cv2.GaussianBlur(face_region, (kernel, kernel), 0)
-            image[y1:y2, x1:x2] = blurred
+            if self.blur_shape == 'ellipse':
+                blurred = cv2.GaussianBlur(face_region, (kernel, kernel), 0)
+                mask = np.zeros_like(face_region)
+                center = (face_region.shape[1] // 2, face_region.shape[0] // 2)
+                axes = (face_region.shape[1] // 2, face_region.shape[0] // 2)
+                cv2.ellipse(mask, center, axes, 0, 0, 360, (255, 255, 255), -1)
+                combined = np.where(mask > 0, blurred, face_region)
+                image[y1:y2, x1:x2] = combined
+            else:
+                blurred = cv2.GaussianBlur(face_region, (kernel, kernel), 0)
+                image[y1:y2, x1:x2] = blurred
             return True
         except Exception as e:
             logger.error(f"模糊陌生人脸失败: {e}")
@@ -416,6 +453,19 @@ class MainWindow(QMainWindow):
             else:
                 status_text.append("未加载摄像头配置")
 
+            health = self.camera_manager.get_camera_health(
+                delay_threshold=self.frame_delay_threshold_s,
+                loss_threshold=self.frame_loss_threshold,
+            )
+            if health.get('last_frame_gap_s') is not None:
+                gap = health['last_frame_gap_s']
+                status_text.append(f"最近帧间隔：{gap:.2f}s")
+            if health.get('delay_warning'):
+                status_text.append("⚠️ 摄像头画面存在延迟")
+            if health.get('loss_warning'):
+                status_text.append("❌ 摄像头信号可能丢失，请检查连接")
+            status_text.append(f"当前状态：{health.get('status', '未知')}")
+
             status_text.append("\n=== 人脸库 ===")
             status_text.append(f"已知人脸数量：{len(self.face_detector.known_faces)}")
 
@@ -423,6 +473,7 @@ class MainWindow(QMainWindow):
             status_text.append(f"当前检测到的人脸数量：{self.current_face_count}")
             status_text.append(f"当前被模糊的人脸数量：{self.current_blurred_count}")
             status_text.append(f"当前模糊范围倍率：{self.blur_strength_factor:.2f}x")
+            status_text.append(f"模糊形状：{'椭圆' if self.blur_shape == 'ellipse' else '矩形'}")
 
             self.status_display.setText("\n".join(status_text))
 
