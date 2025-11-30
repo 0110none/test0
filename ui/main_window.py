@@ -16,9 +16,10 @@ from PyQt5.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
-    QTabWidget,
     QSlider,
     QGroupBox,
+    QRadioButton,
+    QButtonGroup,
 )
 
 # 导入核心模块
@@ -59,6 +60,7 @@ class MainWindow(QMainWindow):
         self.blur_strength_factor = float(processing_cfg.get('blur_strength', 1.0))
         if self.blur_strength_factor <= 0:
             self.blur_strength_factor = 1.0
+        self.blur_shape = processing_cfg.get('blur_shape', 'rectangle')
 
         # 加载已知人脸库
         self.face_detector.load_known_faces(config['app']['known_faces_dir'])
@@ -78,18 +80,46 @@ class MainWindow(QMainWindow):
     # 初始化与 UI 构建部分
     # ------------------------------
     def init_ui(self):
-        """设置主界面布局：Tab页 + 状态栏 + 菜单栏"""
+        """设置主界面布局：单摄像头卡片式展示 + 控制面板"""
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
+        main_layout.setContentsMargins(18, 18, 18, 18)
+        main_layout.setSpacing(18)
 
-        # 标签页（Tab）
-        self.tab_widget = QTabWidget()
-        main_layout.addWidget(self.tab_widget)
+        header = QLabel("实时隐私监控")
+        header.setObjectName("sectionTitle")
+        header.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        main_layout.addWidget(header)
 
-        # 添加功能页
-        self.setup_monitor_tab()   # 摄像头监控界面
-        self.setup_controls_tab()  # 控制参数界面
+        subtitle = QLabel("单路摄像头 · 已知人脸保持清晰 · 陌生人自动模糊")
+        subtitle.setObjectName("subtitle")
+        subtitle.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        main_layout.addWidget(subtitle)
+
+        content_layout = QHBoxLayout()
+        content_layout.setSpacing(16)
+
+        # 左侧：视频窗口
+        video_group = QGroupBox("摄像头画面")
+        video_layout = QVBoxLayout(video_group)
+        video_layout.setSpacing(12)
+        self.camera_label = QLabel()
+        self.camera_label.setAlignment(Qt.AlignCenter)
+        self.camera_label.setMinimumSize(720, 420)
+        self.camera_label.setObjectName("cameraFeed")
+        video_layout.addWidget(self.camera_label)
+        content_layout.addWidget(video_group, 3)
+
+        # 右侧：控制面板
+        right_panel = QVBoxLayout()
+        right_panel.setSpacing(12)
+        right_panel.addWidget(self._build_camera_controls())
+        right_panel.addWidget(self._build_processing_controls())
+        right_panel.addWidget(self._build_status_board())
+        content_layout.addLayout(right_panel, 2)
+
+        main_layout.addLayout(content_layout)
 
         # 状态栏
         self.status_bar = self.statusBar()
@@ -121,45 +151,33 @@ class MainWindow(QMainWindow):
         fullscreen_action = view_menu.addAction('切换全屏')
         fullscreen_action.triggered.connect(self.toggle_fullscreen)
 
-    def setup_monitor_tab(self):
-        """监控界面：显示摄像头实时画面"""
-        monitor_tab = QWidget()
-        self.tab_widget.addTab(monitor_tab, "监控")
-
-        layout = QVBoxLayout(monitor_tab)
-        title = QLabel("实时监控")
-        title.setObjectName("sectionTitle")
-        title.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        layout.addWidget(title)
-
-        self.camera_label = QLabel()
-        self.camera_label.setAlignment(Qt.AlignCenter)
-        self.camera_label.setMinimumSize(640, 360)
-        self.camera_label.setObjectName("cameraFeed")
-        layout.addWidget(self.camera_label, 1)
-
-    def setup_controls_tab(self):
-        """控制界面：用于调节识别阈值、处理间隔、摄像头启停等"""
-        controls_tab = QWidget()
-        self.tab_widget.addTab(controls_tab, "控制")
-        layout = QVBoxLayout(controls_tab)
-
+    def _build_camera_controls(self) -> QGroupBox:
+        """摄像头启停控制卡片"""
         camera_group = QGroupBox("摄像头控制")
         camera_layout = QVBoxLayout(camera_group)
         camera_layout.setSpacing(12)
 
         camera_name = self.camera_manager.camera.name if self.camera_manager.camera else "未配置摄像头"
         name_label = QLabel(f"当前摄像头：{camera_name}")
+        name_label.setObjectName("hintLabel")
         camera_layout.addWidget(name_label)
 
         btn_layout = QHBoxLayout()
-        self.start_btn = QPushButton("启动摄像头")
+        self.start_btn = QPushButton("启动")
         self.start_btn.clicked.connect(self.start_camera_stream)
         btn_layout.addWidget(self.start_btn)
-        self.stop_btn = QPushButton("停止摄像头")
+        self.stop_btn = QPushButton("停止")
         self.stop_btn.clicked.connect(self.stop_camera_stream)
         btn_layout.addWidget(self.stop_btn)
         camera_layout.addLayout(btn_layout)
+
+        return camera_group
+
+    def _build_processing_controls(self) -> QGroupBox:
+        """阈值与模糊参数调节卡片"""
+        process_group = QGroupBox("处理参数")
+        process_layout = QVBoxLayout(process_group)
+        process_layout.setSpacing(12)
 
         threshold_layout = QHBoxLayout()
         threshold_label = QLabel("识别阈值：")
@@ -173,7 +191,7 @@ class MainWindow(QMainWindow):
 
         self.threshold_value = QLabel(f"{self.threshold_slider.value() / 100:.2f}")
         threshold_layout.addWidget(self.threshold_value)
-        camera_layout.addLayout(threshold_layout)
+        process_layout.addLayout(threshold_layout)
 
         blur_layout = QHBoxLayout()
         blur_label = QLabel("模糊范围：")
@@ -190,17 +208,41 @@ class MainWindow(QMainWindow):
         self.blur_value = QLabel(f"{self.blur_slider.value() / 100:.2f}x")
         blur_layout.addWidget(self.blur_value)
         self.update_blur_strength(self.blur_slider.value())
-        camera_layout.addLayout(blur_layout)
+        process_layout.addLayout(blur_layout)
 
-        layout.addWidget(camera_group)
+        # 模糊形状选项
+        shape_layout = QHBoxLayout()
+        shape_label = QLabel("模糊形状：")
+        shape_layout.addWidget(shape_label)
 
+        self.shape_group = QButtonGroup(self)
+        self.shape_rect = QRadioButton("矩形")
+        self.shape_ellipse = QRadioButton("椭圆")
+        self.shape_group.addButton(self.shape_rect)
+        self.shape_group.addButton(self.shape_ellipse)
+        shape_layout.addWidget(self.shape_rect)
+        shape_layout.addWidget(self.shape_ellipse)
+
+        if self.blur_shape == 'ellipse':
+            self.shape_ellipse.setChecked(True)
+        else:
+            self.shape_rect.setChecked(True)
+
+        self.shape_group.buttonClicked.connect(self.update_blur_shape)
+        process_layout.addLayout(shape_layout)
+
+        return process_group
+
+    def _build_status_board(self) -> QGroupBox:
+        """显示运行状态的卡片"""
         status_group = QGroupBox("系统状态")
         status_layout = QVBoxLayout(status_group)
-        status_layout.setSpacing(8)
+        status_layout.setSpacing(10)
         self.status_display = QLabel("正在加载状态...")
         self.status_display.setWordWrap(True)
+        self.status_display.setObjectName("statusText")
         status_layout.addWidget(self.status_display)
-        layout.addWidget(status_group)
+        return status_group
 
     # ------------------------------
     # 菜单动作
@@ -244,6 +286,13 @@ class MainWindow(QMainWindow):
             self.config['processing'] = {}
         self.config['processing']['blur_strength'] = self.blur_strength_factor
         self.blur_value.setText(f"{self.blur_strength_factor:.2f}x")
+
+    def update_blur_shape(self):
+        """切换模糊形状"""
+        self.blur_shape = 'ellipse' if self.shape_ellipse.isChecked() else 'rectangle'
+        if 'processing' not in self.config:
+            self.config['processing'] = {}
+        self.config['processing']['blur_shape'] = self.blur_shape
 
     # ------------------------------
     # 主循环与图像处理
@@ -352,8 +401,21 @@ class MainWindow(QMainWindow):
 
         kernel = self._calculate_blur_kernel(x2 - x1, y2 - y1)
         try:
-            blurred = cv2.GaussianBlur(face_region, (kernel, kernel), 0)
-            image[y1:y2, x1:x2] = blurred
+            if self.blur_shape == 'ellipse':
+                blurred_region = cv2.GaussianBlur(face_region, (kernel, kernel), 0)
+                mask = np.zeros(face_region.shape[:2], dtype=np.uint8)
+                center = (face_region.shape[1] // 2, face_region.shape[0] // 2)
+                axes = (
+                    max(1, face_region.shape[1] // 2),
+                    max(1, face_region.shape[0] // 2),
+                )
+                cv2.ellipse(mask, center, axes, 0, 0, 360, 255, -1)
+                mask_3c = cv2.merge([mask, mask, mask])
+                blended = np.where(mask_3c == 255, blurred_region, face_region)
+                image[y1:y2, x1:x2] = blended
+            else:
+                blurred = cv2.GaussianBlur(face_region, (kernel, kernel), 0)
+                image[y1:y2, x1:x2] = blurred
             return True
         except Exception as e:
             logger.error(f"模糊陌生人脸失败: {e}")
@@ -392,9 +454,18 @@ class MainWindow(QMainWindow):
 
             status_text.append("=== 摄像头状态 ===")
             camera_status = self.camera_manager.get_camera_status()
+            health_status = self.camera_manager.get_health_status()
             if camera_status:
                 running = '运行中' if camera_status['running'] else '已停止'
                 status_text.append(f"{camera_status['name']}：{running}")
+                if health_status.get('delay_ms') is not None:
+                    status_text.append(
+                        f"信号健康：{health_status['health']} (延迟 {health_status['delay_ms']} ms)"
+                    )
+                else:
+                    status_text.append(f"信号健康：{health_status['health']}")
+                if health_status.get('consecutive_failures', 0) > 0:
+                    status_text.append(f"连续读取失败：{health_status['consecutive_failures']} 次")
             else:
                 status_text.append("未加载摄像头配置")
 
@@ -405,6 +476,7 @@ class MainWindow(QMainWindow):
             status_text.append(f"当前检测到的人脸数量：{self.current_face_count}")
             status_text.append(f"当前被模糊的人脸数量：{self.current_blurred_count}")
             status_text.append(f"当前模糊范围倍率：{self.blur_strength_factor:.2f}x")
+            status_text.append(f"当前模糊形状：{'椭圆' if self.blur_shape == 'ellipse' else '矩形'}")
 
             self.status_display.setText("\n".join(status_text))
 
@@ -425,71 +497,80 @@ class MainWindow(QMainWindow):
         """统一设置应用的样式和色彩风格"""
         self.setStyleSheet("""
             QMainWindow {
-                background-color: #0f172a;
+                background-color: #070b16;
                 color: #e2e8f0;
             }
             QLabel {
                 color: #e2e8f0;
             }
             QLabel#sectionTitle {
-                font-size: 20px;
-                font-weight: 600;
-                padding: 8px 0;
-                color: #93c5fd;
+                font-size: 22px;
+                font-weight: 700;
+                padding: 6px 0 2px 0;
+                color: #67e8f9;
+                letter-spacing: 1px;
+            }
+            QLabel#subtitle {
+                color: #a5b4fc;
+                padding-bottom: 12px;
+            }
+            QLabel#hintLabel {
+                color: #cbd5f5;
+            }
+            QLabel#statusText {
+                color: #e5e7eb;
+                line-height: 1.5em;
             }
             QLabel#cameraFeed {
-                background-color: #1e293b;
-                border-radius: 12px;
-                border: 2px solid #1d4ed8;
-            }
-            QTabWidget::pane {
-                border: 1px solid #1d4ed8;
-                border-radius: 10px;
-                background-color: #111c34;
-            }
-            QTabBar::tab {
-                padding: 10px 24px;
-                background-color: transparent;
-                color: #cbd5f5;
-                border-bottom: 2px solid transparent;
-            }
-            QTabBar::tab:selected {
-                background-color: #1e3a8a;
-                border-top-left-radius: 8px;
-                border-top-right-radius: 8px;
-                color: #ffffff;
-                border-bottom: 2px solid #60a5fa;
-            }
-            QPushButton {
-                background-color: qlineargradient(spread:pad, x1:0, y1:0, x2:0, y2:1, stop:0 #2563eb, stop:1 #1e40af);
-                border: 2px solid #60a5fa;
-                border-radius: 10px;
-                padding: 10px 20px;
-                color: #ffffff;
-                font-weight: 600;
-            }
-            QPushButton:hover {
-                background-color: qlineargradient(spread:pad, x1:0, y1:0, x2:0, y2:1, stop:0 #3b82f6, stop:1 #1d4ed8);
-                border: 2px solid #93c5fd;
-            }
-            QPushButton:pressed {
-                background-color: qlineargradient(spread:pad, x1:0, y1:0, x2:0, y2:1, stop:0 #1d4ed8, stop:1 #1e3a8a);
-                border: 2px solid #3b82f6;
-                padding-top: 12px;
-                padding-bottom: 8px;
+                background-color: rgba(15,23,42,0.75);
+                border-radius: 16px;
+                border: 2px solid rgba(14,165,233,0.4);
+                box-shadow: 0 0 18px rgba(6,182,212,0.35);
             }
             QGroupBox {
-                border: 1px solid #1d4ed8;
-                border-radius: 12px;
-                margin-top: 12px;
+                border: 1px solid rgba(99,102,241,0.6);
+                border-radius: 14px;
+                margin-top: 8px;
                 padding: 16px;
                 font-weight: 600;
-                background-color: rgba(30, 64, 175, 0.35);
+                background-color: rgba(24, 30, 54, 0.85);
+                box-shadow: inset 0 0 18px rgba(79,70,229,0.35);
             }
             QGroupBox::title {
                 subcontrol-origin: margin;
                 subcontrol-position: top left;
                 padding: 0 10px;
-                color: #bfdbfe;
+                color: #93c5fd;
+                background-color: transparent;
+            }
+            QPushButton {
+                background-color: qlineargradient(spread:pad, x1:0, y1:0, x2:1, y2:1, stop:0 #0ea5e9, stop:1 #6366f1);
+                border: 1px solid #67e8f9;
+                border-radius: 12px;
+                padding: 12px 18px;
+                color: #ffffff;
+                font-weight: 700;
+                letter-spacing: 0.5px;
+                box-shadow: 0 0 12px rgba(103,102,241,0.35);
+            }
+            QPushButton:hover {
+                border: 1px solid #a5b4fc;
+                box-shadow: 0 0 14px rgba(103,102,241,0.55);
+            }
+            QPushButton:pressed {
+                background-color: qlineargradient(spread:pad, x1:0, y1:0, x2:1, y2:1, stop:0 #312e81, stop:1 #0b7285);
+            }
+            QSlider::groove:horizontal {
+                height: 8px;
+                background: rgba(99,102,241,0.35);
+                border-radius: 4px;
+            }
+            QSlider::handle:horizontal {
+                background: #67e8f9;
+                border: 1px solid #0ea5e9;
+                width: 18px;
+                margin: -6px 0;
+                border-radius: 9px;
+                box-shadow: 0 0 10px rgba(14,165,233,0.65);
             }
         """)

@@ -41,9 +41,12 @@ class FaceDetector:
     def _load_model(self) -> FaceAnalysis:
         """加载 InsightFace 模型"""
         try:
+            # 项目根目录：core/ 的上两级
+            project_root = Path(__file__).resolve().parent.parent
+
             model = FaceAnalysis(
                 name='buffalo_l',
-                root='./models',
+                root=str(project_root),   # ⭐ 让它去 project_root/models/buffalo_l 下面找
                 allowed_modules=['detection', 'recognition', 'genderage']
             )
             model.prepare(

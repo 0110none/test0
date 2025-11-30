@@ -1,6 +1,6 @@
 import cv2
 import numpy as np
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 from dataclasses import dataclass
 from loguru import logger
 import time
@@ -29,7 +29,9 @@ class CameraManager:
         self.camera: Optional[CameraConfig] = None
         self.capture_thread: Optional[threading.Thread] = None
         self.stop_event = threading.Event()
-        self.frame_queue: "queue.Queue[np.ndarray]" = queue.Queue(maxsize=1)
+        self.frame_queue: "queue.Queue[Tuple[np.ndarray, float]]" = queue.Queue(maxsize=1)
+        self.last_frame_ts: Optional[float] = None
+        self.consecutive_failures: int = 0
         self.load_config(config_path)
 
     def _cleanup_camera_thread(self) -> None:
@@ -131,6 +133,7 @@ class CameraManager:
             while not self.stop_event.is_set():
                 ret, frame = cap.read()
                 if not ret:
+                    self.consecutive_failures += 1
                     logger.warning("摄像头读取失败")
                     source_path = cam_config.source
                     if isinstance(source_path, str) and Path(source_path).exists():
@@ -138,6 +141,8 @@ class CameraManager:
                         continue
                     time.sleep(1)
                     continue
+
+                self.consecutive_failures = 0
 
                 if cam_config.rotate == 90:
                     frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
@@ -151,7 +156,9 @@ class CameraManager:
                         self.frame_queue.get_nowait()
                     except queue.Empty:
                         pass
-                self.frame_queue.put(frame)
+                timestamp = time.time()
+                self.frame_queue.put((frame, timestamp))
+                self.last_frame_ts = timestamp
 
         except Exception as e:
             logger.error(f"摄像头捕获线程出错: {e}")
@@ -163,7 +170,9 @@ class CameraManager:
     def get_frame(self) -> Optional[np.ndarray]:
         """获取最新帧"""
         try:
-            return self.frame_queue.get_nowait()
+            frame, ts = self.frame_queue.get_nowait()
+            self.last_frame_ts = ts
+            return frame
         except queue.Empty:
             return None
 
@@ -179,4 +188,32 @@ class CameraManager:
             'running': running,
             'frame_queue_size': self.frame_queue.qsize(),
             'enabled': self.camera.enabled,
+        }
+
+    def get_health_status(self) -> Dict[str, object]:
+        """返回摄像头信号健康信息：延迟、丢失等"""
+        now = time.time()
+        delay_ms = None
+        status = '未启动'
+
+        if self.capture_thread is not None and self.capture_thread.is_alive():
+            status = '运行中'
+
+        if self.last_frame_ts:
+            delay_ms = (now - self.last_frame_ts) * 1000
+            if delay_ms < 1200:
+                health = '正常'
+            elif delay_ms < 3500:
+                health = '延迟'
+            else:
+                health = '信号丢失'
+        else:
+            health = '无信号'
+
+        return {
+            'status': status,
+            'health': health,
+            'delay_ms': round(delay_ms, 1) if delay_ms is not None else None,
+            'consecutive_failures': self.consecutive_failures,
+            'queue_size': self.frame_queue.qsize(),
         }
