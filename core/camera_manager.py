@@ -30,6 +30,8 @@ class CameraManager:
         self.capture_thread: Optional[threading.Thread] = None
         self.stop_event = threading.Event()
         self.frame_queue: "queue.Queue[np.ndarray]" = queue.Queue(maxsize=1)
+        self.last_frame_timestamp: Optional[float] = None
+        self.consecutive_failures: int = 0
         self.load_config(config_path)
 
     def _cleanup_camera_thread(self) -> None:
@@ -49,6 +51,8 @@ class CameraManager:
             pass
 
         self.capture_thread = None
+        self.last_frame_timestamp = None
+        self.consecutive_failures = 0
         logger.debug("已清理摄像头资源")
 
     def load_config(self, config_path: str) -> None:
@@ -132,6 +136,7 @@ class CameraManager:
                 ret, frame = cap.read()
                 if not ret:
                     logger.warning("摄像头读取失败")
+                    self.consecutive_failures += 1
                     source_path = cam_config.source
                     if isinstance(source_path, str) and Path(source_path).exists():
                         cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
@@ -139,6 +144,8 @@ class CameraManager:
                     time.sleep(1)
                     continue
 
+                self.last_frame_timestamp = time.time()
+                self.consecutive_failures = 0
                 if cam_config.rotate == 90:
                     frame = cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
                 elif cam_config.rotate == 180:
@@ -179,4 +186,34 @@ class CameraManager:
             'running': running,
             'frame_queue_size': self.frame_queue.qsize(),
             'enabled': self.camera.enabled,
+        }
+
+    def get_camera_health(self, delay_threshold: float = 2.0, loss_threshold: int = 5) -> Dict[str, object]:
+        """返回摄像头健康状态，包括延迟和信号丢失提示"""
+        running = self.capture_thread is not None and self.capture_thread.is_alive()
+        now = time.time()
+
+        if self.last_frame_timestamp is None:
+            last_gap = None
+        else:
+            last_gap = max(0.0, now - self.last_frame_timestamp)
+
+        delay_warning = (
+            running and last_gap is not None and last_gap > delay_threshold
+        )
+        loss_warning = running and self.consecutive_failures >= loss_threshold
+
+        status = "运行中" if running else "已停止"
+        if loss_warning:
+            status = "信号丢失"
+        elif delay_warning:
+            status = "信号延迟"
+
+        return {
+            'running': running,
+            'status': status,
+            'last_frame_gap_s': last_gap,
+            'delay_warning': delay_warning,
+            'loss_warning': loss_warning,
+            'consecutive_failures': self.consecutive_failures,
         }
