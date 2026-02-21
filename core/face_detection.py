@@ -6,19 +6,19 @@ from typing import List, Tuple, Optional
 from dataclasses import dataclass
 from pathlib import Path
 import time
-# -*- coding: utf-8 -*-
-# 人脸信息数据结构（单张检测结果）
+
+
 @dataclass
 class Face:
-    bbox: np.ndarray          # 人脸位置（边框坐标）
-    kps: np.ndarray           # 关键点坐标（眼、鼻、嘴）
-    det_score: float          # 检测置信度
-    embedding: np.ndarray     # 人脸特征向量
+    bbox: np.ndarray
+    kps: np.ndarray
+    det_score: float
+    embedding: np.ndarray
     age: Optional[int] = None
-    gender: Optional[str] = None  # 'Male' / 'Female'
-    face_img: Optional[np.ndarray] = None  # 裁剪后的人脸图像
+    gender: Optional[str] = None
+    face_img: Optional[np.ndarray] = None
 
-# 已知人脸数据结构
+
 @dataclass
 class KnownFace:
     name: str
@@ -31,27 +31,44 @@ class FaceDetector:
 
     def __init__(self, config: dict):
         self.config = config
-        self.recognition_threshold = config['recognition']['recognition_threshold']  # 识别阈值
-        self.detection_threshold = config['recognition']['detection_threshold']      # 检测阈值
-        self.device = config['recognition']['device']                               # CPU / GPU
-        self.analysis_enabled = config['recognition'].get('analysis_enabled', True) # 是否启用年龄性别分析
-        self.model = self._load_model()   # 加载 InsightFace 模型
-        self.known_faces: List[KnownFace] = []  # 已知人脸列表
+        self.recognition_threshold = config['recognition']['recognition_threshold']
+        self.detection_threshold = config['recognition']['detection_threshold']
+        self.device = config['recognition']['device']
+        self.actual_device = self.device
+        self.analysis_enabled = config['recognition'].get('analysis_enabled', True)
+        self.model = self._load_model()
+        self.known_faces: List[KnownFace] = []
+
+    def _build_model(self, ctx_id: int) -> FaceAnalysis:
+        model = FaceAnalysis(
+            name='buffalo_l',
+            root='./models',
+            allowed_modules=['detection', 'recognition', 'genderage']
+        )
+        model.prepare(
+            ctx_id=ctx_id,
+            det_thresh=self.detection_threshold,
+            det_size=(640, 640)
+        )
+        return model
 
     def _load_model(self) -> FaceAnalysis:
-        """加载 InsightFace 模型"""
+        """加载 InsightFace 模型，优先 CUDA，失败回退 CPU"""
+        preferred_device = (self.device or 'cpu').lower()
+        if preferred_device == 'cuda':
+            try:
+                model = self._build_model(ctx_id=0)
+                self.actual_device = 'cuda'
+                logger.success("人脸检测模型加载成功（CUDA）")
+                return model
+            except Exception as e:
+                logger.warning(f"CUDA 初始化失败，自动回退到 CPU: {e}")
+
         try:
-            model = FaceAnalysis(
-                name='buffalo_l',
-                root='./models',
-                allowed_modules=['detection', 'recognition', 'genderage']
-            )
-            model.prepare(
-                ctx_id=0 if self.device == 'cuda' else -1,  # GPU 或 CPU 模式
-                det_thresh=self.detection_threshold,
-                det_size=(640, 640)
-            )
-            logger.success("人脸检测模型加载成功")
+            model = self._build_model(ctx_id=-1)
+            self.actual_device = 'cpu'
+            self.config.setdefault('recognition', {})['device'] = 'cpu'
+            logger.success("人脸检测模型加载成功（CPU）")
             return model
         except Exception as e:
             logger.error(f"加载人脸检测模型失败: {e}")
@@ -82,7 +99,6 @@ class FaceDetector:
                         logger.warning(f"未检测到人脸: {face_file}")
                         continue
 
-                    # 使用第一张检测到的人脸
                     face = faces[0]
                     name = face_file.stem
                     self.known_faces.append(KnownFace(
@@ -131,7 +147,6 @@ class FaceDetector:
             return [(face, None, 0.0) for face in faces]
 
         try:
-            # 提取已知人脸的所有 embedding 向量
             known_embeddings = np.array([kf.embedding for kf in self.known_faces])
 
             for face in faces:
@@ -139,7 +154,6 @@ class FaceDetector:
                     results.append((face, None, 0.0))
                     continue
 
-                # 计算余弦相似度（Cosine Similarity）
                 similarities = np.dot(known_embeddings, face.embedding) / (
                     np.linalg.norm(known_embeddings, axis=1) * np.linalg.norm(face.embedding)
                 )
@@ -147,7 +161,6 @@ class FaceDetector:
                 max_idx = np.argmax(similarities)
                 max_similarity = similarities[max_idx]
 
-                # 判断是否超过识别阈值
                 if max_similarity > self.recognition_threshold:
                     results.append((face, self.known_faces[max_idx], max_similarity))
                 else:
@@ -183,15 +196,12 @@ class FaceDetector:
                 logger.warning("未检测到人脸，添加失败")
                 return False
 
-            # 使用第一张检测到的人脸
             face = faces[0]
 
-            # 保存人脸图片
             timestamp = int(time.time())
             face_path = save_dir / f"{name}_{timestamp}.jpg"
             cv2.imwrite(str(face_path), image)
 
-            # 添加到已知人脸列表
             self.known_faces.append(KnownFace(
                 name=name,
                 embedding=face.embedding,
@@ -206,13 +216,11 @@ class FaceDetector:
             return False
 
     def _get_age(self, face) -> Optional[int]:
-        """提取年龄预测结果"""
         if not self.analysis_enabled:
             return None
         return int(face.age) if hasattr(face, 'age') else None
 
     def _get_gender(self, face) -> Optional[str]:
-        """提取性别预测结果"""
         if not self.analysis_enabled:
             return None
         if not hasattr(face, 'sex') or face.sex is None:
