@@ -1,7 +1,9 @@
 # -*- coding: utf-8 -*-
 
-import sys
-from typing import Optional, Tuple
+import csv
+import time
+from pathlib import Path
+from typing import Optional, Tuple, List, Dict
 
 import cv2
 import numpy as np
@@ -10,7 +12,6 @@ from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtGui import QIcon
 from PyQt5.QtWidgets import (
     QMainWindow,
-    QApplication,
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
@@ -20,69 +21,74 @@ from PyQt5.QtWidgets import (
     QGroupBox,
     QRadioButton,
     QButtonGroup,
+    QMessageBox,
 )
+import yaml
 
-# 导入核心模块
 from core.face_detection import FaceDetector
 from core.camera_manager import CameraManager
 from core.utils import numpy_to_pixmap
-
-# 导入子界面模块
 from .face_manager import FaceManagerDialog
 
 
 class MainWindow(QMainWindow):
-    """
-    系统主窗口（MainWindow）
-    ------------------------
-    负责整合摄像头流、人脸检测与识别模块，并在界面上呈现隐私保护后的画面。
-    已注册人脸将保持清晰，陌生人脸会被自动模糊处理。
-    """
-
     def __init__(self, config):
-        """初始化主界面及所有核心组件"""
         super().__init__()
         self.config = config
+        self.config_path = Path('config/config.yaml')
         self.setWindowTitle(f"{config['app']['name']} v{config['app']['version']}")
         self.setWindowIcon(QIcon(config['app']['logo']))
         self.setGeometry(100, 100, 1200, 800)
 
-        # --- 初始化核心组件 ---
-        self.face_detector = FaceDetector(config)                         # 人脸检测与识别模块
-        self.camera_manager = CameraManager('config/camera_config.yaml')  # 摄像头管理模块
+        self.face_detector = FaceDetector(config)
+        self.camera_manager = CameraManager('config/camera_config.yaml')
 
-        # 实时统计信息
         self.current_face_count = 0
         self.current_blurred_count = 0
         self.frame_delay_threshold_s = 2.0
         self.frame_loss_threshold = 5
 
-        # 模糊强度（用于控制高斯模糊范围）
         processing_cfg = self.config.get('processing', {})
-        self.blur_strength_factor = float(processing_cfg.get('blur_strength', 1.0))
-        if self.blur_strength_factor <= 0:
-            self.blur_strength_factor = 1.0
+        recognition_cfg = self.config.get('recognition', {})
+        self.blur_strength_factor = max(0.1, float(processing_cfg.get('blur_strength', 1.0)))
         self.blur_shape = processing_cfg.get('blur_shape', 'rectangle')
+        self.detection_interval = max(1, int(recognition_cfg.get('detection_interval_frames', 3)))
 
-        # 加载已知人脸库
+        self.frame_index = 0
+        self.cached_recognized_faces: List[Tuple[Tuple[int, int, int, int], Optional[str], float]] = []
+
+        self.last_tick_ts = time.time()
+        self.current_fps = 0.0
+
+        self.metrics = {
+            'frames_total': 0,
+            'detect_frames': 0,
+            'faces_total': 0,
+            'blurred_total': 0,
+            'events_total': 0,
+            'started_at': time.time(),
+        }
+        self.event_history: List[Dict[str, str]] = []
+        self.last_health_status = None
+        self.event_log_path = Path(self.config.get('app', {}).get('log_dir', 'logs')) / 'events.log'
+        self.event_log_path.parent.mkdir(parents=True, exist_ok=True)
+
+        self.save_config_timer = QTimer(self)
+        self.save_config_timer.setSingleShot(True)
+        self.save_config_timer.timeout.connect(self.persist_runtime_config)
+
         self.face_detector.load_known_faces(config['app']['known_faces_dir'])
 
-        # --- 初始化 UI ---
         self.init_ui()
-
-        # 启动摄像头线程
         self.camera_manager.start_camera()
 
-        # 启动定时更新器（刷新画面）
         self.update_timer = QTimer(self)
         self.update_timer.timeout.connect(self.update)
-        self.update_timer.start(30)  # 约 30 FPS
+        self.update_timer.start(30)
 
-    # ------------------------------
-    # 初始化与 UI 构建部分
-    # ------------------------------
+        self.record_event('系统启动', f"推理设备: {self.face_detector.actual_device}")
+
     def init_ui(self):
-        """设置主界面布局：单摄像头卡片式展示 + 控制面板"""
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)
@@ -102,7 +108,6 @@ class MainWindow(QMainWindow):
         content_layout = QHBoxLayout()
         content_layout.setSpacing(16)
 
-        # 左侧：视频窗口
         video_group = QGroupBox("摄像头画面")
         video_layout = QVBoxLayout(video_group)
         video_layout.setSpacing(12)
@@ -113,7 +118,6 @@ class MainWindow(QMainWindow):
         video_layout.addWidget(self.camera_label)
         content_layout.addWidget(video_group, 3)
 
-        # 右侧：控制面板
         right_panel = QVBoxLayout()
         right_panel.setSpacing(12)
         right_panel.addWidget(self._build_camera_controls())
@@ -123,39 +127,35 @@ class MainWindow(QMainWindow):
 
         main_layout.addLayout(content_layout)
 
-        # 状态栏
         self.status_bar = self.statusBar()
         self.status_label = QLabel("就绪")
         self.status_bar.addPermanentWidget(self.status_label)
 
-        # 菜单栏
         self.setup_menu_bar()
-
-        # 统一应用样式
         self.apply_styles()
 
     def setup_menu_bar(self):
-        """创建菜单栏（文件、工具、视图）"""
         menubar = self.menuBar()
 
-        # 文件菜单
         file_menu = menubar.addMenu('文件')
+        export_action = file_menu.addAction('导出评估报告')
+        export_action.triggered.connect(self.export_evaluation_report)
+        save_config_action = file_menu.addAction('保存当前参数')
+        save_config_action.triggered.connect(self.persist_runtime_config)
         exit_action = file_menu.addAction('退出')
         exit_action.triggered.connect(self.close)
 
-        # 工具菜单
         tools_menu = menubar.addMenu('工具')
         face_manager_action = tools_menu.addAction('人脸管理')
         face_manager_action.triggered.connect(self.open_face_manager)
 
-        # 视图菜单
         view_menu = menubar.addMenu('视图')
         fullscreen_action = view_menu.addAction('切换全屏')
         fullscreen_action.triggered.connect(self.toggle_fullscreen)
 
     def _build_camera_controls(self) -> QGroupBox:
-        """摄像头启停控制卡片"""
         camera_group = QGroupBox("摄像头控制")
+        camera_group.setObjectName("cameraControls")
         camera_layout = QVBoxLayout(camera_group)
         camera_layout.setSpacing(12)
 
@@ -166,9 +166,11 @@ class MainWindow(QMainWindow):
 
         btn_layout = QHBoxLayout()
         self.start_btn = QPushButton("启动")
+        self.start_btn.setObjectName("startButton")
         self.start_btn.clicked.connect(self.start_camera_stream)
         btn_layout.addWidget(self.start_btn)
         self.stop_btn = QPushButton("停止")
+        self.stop_btn.setObjectName("stopButton")
         self.stop_btn.clicked.connect(self.stop_camera_stream)
         btn_layout.addWidget(self.stop_btn)
         camera_layout.addLayout(btn_layout)
@@ -176,45 +178,46 @@ class MainWindow(QMainWindow):
         return camera_group
 
     def _build_processing_controls(self) -> QGroupBox:
-        """阈值与模糊参数调节卡片"""
         process_group = QGroupBox("处理参数")
+        process_group.setObjectName("processingControls")
         process_layout = QVBoxLayout(process_group)
         process_layout.setSpacing(12)
 
         threshold_layout = QHBoxLayout()
-        threshold_label = QLabel("识别阈值：")
-        threshold_layout.addWidget(threshold_label)
-
+        threshold_layout.addWidget(QLabel("识别阈值："))
         self.threshold_slider = QSlider(Qt.Horizontal)
         self.threshold_slider.setRange(50, 100)
         self.threshold_slider.setValue(int(self.config['recognition']['recognition_threshold'] * 100))
         self.threshold_slider.valueChanged.connect(self.update_threshold)
         threshold_layout.addWidget(self.threshold_slider)
-
         self.threshold_value = QLabel(f"{self.threshold_slider.value() / 100:.2f}")
         threshold_layout.addWidget(self.threshold_value)
         process_layout.addLayout(threshold_layout)
 
         blur_layout = QHBoxLayout()
-        blur_label = QLabel("模糊范围：")
-        blur_layout.addWidget(blur_label)
-
+        blur_layout.addWidget(QLabel("模糊范围："))
         self.blur_slider = QSlider(Qt.Horizontal)
         self.blur_slider.setRange(50, 200)
-        initial_blur_value = int(self.blur_strength_factor * 100)
-        initial_blur_value = max(self.blur_slider.minimum(), min(self.blur_slider.maximum(), initial_blur_value))
-        self.blur_slider.setValue(initial_blur_value)
+        self.blur_slider.setValue(int(self.blur_strength_factor * 100))
         self.blur_slider.valueChanged.connect(self.update_blur_strength)
         blur_layout.addWidget(self.blur_slider)
-
         self.blur_value = QLabel(f"{self.blur_slider.value() / 100:.2f}x")
         blur_layout.addWidget(self.blur_value)
-        self.update_blur_strength(self.blur_slider.value())
         process_layout.addLayout(blur_layout)
 
+        interval_layout = QHBoxLayout()
+        interval_layout.addWidget(QLabel("检测间隔帧："))
+        self.interval_slider = QSlider(Qt.Horizontal)
+        self.interval_slider.setRange(1, 8)
+        self.interval_slider.setValue(self.detection_interval)
+        self.interval_slider.valueChanged.connect(self.update_detection_interval)
+        interval_layout.addWidget(self.interval_slider)
+        self.interval_value = QLabel(f"{self.interval_slider.value()} 帧")
+        interval_layout.addWidget(self.interval_value)
+        process_layout.addLayout(interval_layout)
+
         shape_layout = QHBoxLayout()
-        shape_label = QLabel("模糊形状：")
-        shape_layout.addWidget(shape_label)
+        shape_layout.addWidget(QLabel("模糊形状："))
         self.blur_shape_group = QButtonGroup(self)
         self.rect_radio = QRadioButton("矩形")
         self.ellipse_radio = QRadioButton("椭圆")
@@ -231,8 +234,8 @@ class MainWindow(QMainWindow):
         return process_group
 
     def _build_status_board(self) -> QGroupBox:
-        """显示运行状态的卡片"""
         status_group = QGroupBox("系统状态")
+        status_group.setObjectName("systemStatusPanel")
         status_layout = QVBoxLayout(status_group)
         status_layout.setSpacing(10)
         self.status_display = QLabel("正在加载状态...")
@@ -241,61 +244,63 @@ class MainWindow(QMainWindow):
         status_layout.addWidget(self.status_display)
         return status_group
 
-    # ------------------------------
-    # 菜单动作
-    # ------------------------------
     def open_face_manager(self):
-        """打开人脸管理窗口"""
         dialog = FaceManagerDialog(self.face_detector, self.config['app']['known_faces_dir'])
         dialog.exec_()
         self.face_detector.load_known_faces(self.config['app']['known_faces_dir'])
+        self.record_event('人脸库', '已刷新已知人脸数据')
 
     def toggle_fullscreen(self):
-        """切换全屏模式"""
         if self.isFullScreen():
             self.showNormal()
         else:
             self.showFullScreen()
 
-    # ------------------------------
-    # 摄像头控制与参数调节
-    # ------------------------------
     def start_camera_stream(self):
-        """启动摄像头"""
         if self.camera_manager.start_camera():
             self.status_label.setText("摄像头已启动")
+            self.record_event('摄像头', '手动启动摄像头')
 
     def stop_camera_stream(self):
-        """停止摄像头"""
         self.camera_manager.stop_camera()
         self.status_label.setText("摄像头已停止")
+        self.record_event('摄像头', '手动停止摄像头')
 
     def update_threshold(self, value):
-        """调整识别置信度阈值"""
         threshold = value / 100
         self.face_detector.recognition_threshold = threshold
+        self.config.setdefault('recognition', {})['recognition_threshold'] = threshold
         self.threshold_value.setText(f"{threshold:.2f}")
+        self.schedule_config_save()
 
     def update_blur_strength(self, value: int):
-        """调整模糊强度（缩放高斯模糊核大小）"""
         self.blur_strength_factor = max(0.1, value / 100)
-        if 'processing' not in self.config:
-            self.config['processing'] = {}
-        self.config['processing']['blur_strength'] = self.blur_strength_factor
+        self.config.setdefault('processing', {})['blur_strength'] = self.blur_strength_factor
         self.blur_value.setText(f"{self.blur_strength_factor:.2f}x")
+        self.schedule_config_save()
+
+    def update_detection_interval(self, value: int):
+        self.detection_interval = max(1, int(value))
+        self.config.setdefault('recognition', {})['detection_interval_frames'] = self.detection_interval
+        self.interval_value.setText(f"{self.detection_interval} 帧")
+        self.schedule_config_save()
 
     def update_blur_shape(self, _button=None):
-        """切换模糊形状（矩形/椭圆）"""
         self.blur_shape = 'ellipse' if self.ellipse_radio.isChecked() else 'rectangle'
-        if 'processing' not in self.config:
-            self.config['processing'] = {}
-        self.config['processing']['blur_shape'] = self.blur_shape
+        self.config.setdefault('processing', {})['blur_shape'] = self.blur_shape
+        self.schedule_config_save()
 
-    # ------------------------------
-    # 主循环与图像处理
-    # ------------------------------
+    def schedule_config_save(self):
+        self.save_config_timer.start(500)
+
+    def persist_runtime_config(self):
+        try:
+            with self.config_path.open('w', encoding='utf-8') as f:
+                yaml.safe_dump(self.config, f, allow_unicode=True, sort_keys=False)
+        except Exception as e:
+            logger.error(f"保存配置失败: {e}")
+
     def update(self):
-        """主循环（每30ms执行一次）：获取帧→识别→模糊→显示→更新状态"""
         try:
             frame = self.camera_manager.get_frame()
             total_faces = 0
@@ -306,11 +311,15 @@ class MainWindow(QMainWindow):
                 total_faces += face_count
                 total_blurred += blurred_count
                 self.display_frame(processed_frame)
+                self.metrics['frames_total'] += 1
+                self.metrics['faces_total'] += face_count
+                self.metrics['blurred_total'] += blurred_count
 
             self.current_face_count = total_faces
             self.current_blurred_count = total_blurred
+            self.current_fps = self._calculate_fps()
             self.status_label.setText(
-                f"检测到人脸: {total_faces} | 已模糊: {total_blurred}"
+                f"FPS: {self.current_fps:.1f} | 检测到人脸: {total_faces} | 已模糊: {total_blurred}"
             )
             self.update_status()
 
@@ -318,59 +327,64 @@ class MainWindow(QMainWindow):
             logger.error(f"更新循环错误: {e}")
             self.status_label.setText(f"错误: {str(e)}")
 
+    def _calculate_fps(self) -> float:
+        now = time.time()
+        gap = max(1e-6, now - self.last_tick_ts)
+        self.last_tick_ts = now
+        return 1.0 / gap
+
     def process_frame(self, frame: np.ndarray) -> Tuple[np.ndarray, int, int]:
-        """检测并处理一帧画面，返回处理结果及统计信息"""
         processed_frame = frame.copy()
+        self.frame_index += 1
 
-        try:
-            faces = self.face_detector.detect_faces(frame)
-        except Exception as e:
-            logger.error(f"检测人脸失败: {e}")
-            return processed_frame, 0, 0
+        should_detect = (
+            self.frame_index % self.detection_interval == 0
+            or not self.cached_recognized_faces
+        )
 
-        if not faces:
-            return processed_frame, 0, 0
+        if should_detect:
+            try:
+                faces = self.face_detector.detect_faces(frame)
+                recognized_faces = self.face_detector.recognize_faces(faces)
+                self.cached_recognized_faces = []
+                for face, known_face, confidence in recognized_faces:
+                    clipped_bbox = self._clip_bbox(face.bbox, processed_frame.shape)
+                    if clipped_bbox is None:
+                        continue
+                    self.cached_recognized_faces.append((clipped_bbox, known_face.name if known_face else None, confidence))
+                self.metrics['detect_frames'] += 1
+            except Exception as e:
+                logger.error(f"检测人脸失败: {e}")
+                return processed_frame, 0, 0
 
-        recognized_faces = self.face_detector.recognize_faces(faces)
         blurred_count = 0
-
-        for face, known_face, confidence in recognized_faces:
-            clipped_bbox = self._clip_bbox(face.bbox, processed_frame.shape)
-            if clipped_bbox is None:
-                continue
-
-            if known_face:
-                self._draw_known_face(processed_frame, clipped_bbox, known_face.name, confidence)
+        for bbox, known_name, confidence in self.cached_recognized_faces:
+            if known_name:
+                self._draw_known_face(processed_frame, bbox, known_name, confidence)
             else:
-                if self._blur_face_region(processed_frame, clipped_bbox):
+                if self._blur_face_region(processed_frame, bbox):
                     blurred_count += 1
 
-        return processed_frame, len(faces), blurred_count
+        return processed_frame, len(self.cached_recognized_faces), blurred_count
 
     def _clip_bbox(self, bbox: np.ndarray, frame_shape: Tuple[int, int, int]) -> Optional[Tuple[int, int, int, int]]:
-        """将人脸框裁剪到图像范围内"""
         try:
             h, w = frame_shape[:2]
             x1, y1, x2, y2 = [int(round(coord)) for coord in bbox]
-
             x1 = max(0, min(x1, w - 1))
             y1 = max(0, min(y1, h - 1))
             x2 = max(0, min(x2, w))
             y2 = max(0, min(y2, h))
-
             if x2 <= x1 or y2 <= y1:
                 return None
-
             return x1, y1, x2, y2
         except Exception as e:
             logger.error(f"裁剪人脸框失败: {e}")
             return None
 
     def _draw_known_face(self, image: np.ndarray, bbox: Tuple[int, int, int, int], name: str, confidence: float) -> None:
-        """在图像上标注已注册人脸"""
         x1, y1, x2, y2 = bbox
         cv2.rectangle(image, (x1, y1), (x2, y2), (0, 255, 0), 2)
-
         try:
             name.encode('ascii')
             label_text = f"{name} {confidence:.2f}"
@@ -378,19 +392,9 @@ class MainWindow(QMainWindow):
             label_text = f"Known {confidence:.2f}"
 
         text_org = (x1, y1 - 10 if y1 - 10 > 10 else y2 + 20)
-        cv2.putText(
-            image,
-            label_text,
-            text_org,
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.6,
-            (0, 255, 0),
-            2,
-            cv2.LINE_AA,
-        )
+        cv2.putText(image, label_text, text_org, cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2, cv2.LINE_AA)
 
     def _blur_face_region(self, image: np.ndarray, bbox: Tuple[int, int, int, int]) -> bool:
-        """对指定区域进行模糊处理"""
         x1, y1, x2, y2 = bbox
         face_region = image[y1:y2, x1:x2]
         if face_region.size == 0:
@@ -398,16 +402,14 @@ class MainWindow(QMainWindow):
 
         kernel = self._calculate_blur_kernel(x2 - x1, y2 - y1)
         try:
+            blurred = cv2.GaussianBlur(face_region, (kernel, kernel), 0)
             if self.blur_shape == 'ellipse':
-                blurred = cv2.GaussianBlur(face_region, (kernel, kernel), 0)
                 mask = np.zeros_like(face_region)
                 center = (face_region.shape[1] // 2, face_region.shape[0] // 2)
                 axes = (face_region.shape[1] // 2, face_region.shape[0] // 2)
                 cv2.ellipse(mask, center, axes, 0, 0, 360, (255, 255, 255), -1)
-                combined = np.where(mask > 0, blurred, face_region)
-                image[y1:y2, x1:x2] = combined
+                image[y1:y2, x1:x2] = np.where(mask > 0, blurred, face_region)
             else:
-                blurred = cv2.GaussianBlur(face_region, (kernel, kernel), 0)
                 image[y1:y2, x1:x2] = blurred
             return True
         except Exception as e:
@@ -415,7 +417,6 @@ class MainWindow(QMainWindow):
             return False
 
     def _calculate_blur_kernel(self, width: int, height: int) -> int:
-        """根据人脸尺寸自适应计算高斯模糊核大小（保持为奇数）"""
         base = max(width, height) // 6
         kernel = max(15, base * 2 + 1)
         scaled_kernel = int(round(kernel * self.blur_strength_factor))
@@ -424,27 +425,18 @@ class MainWindow(QMainWindow):
         return max(3, scaled_kernel)
 
     def display_frame(self, frame: np.ndarray):
-        """将处理后的画面显示到摄像头窗口"""
         try:
             if frame is None:
                 return
             pixmap = numpy_to_pixmap(frame)
-            if pixmap is None:
-                return
-            scaled = pixmap.scaled(
-                self.camera_label.size(),
-                Qt.KeepAspectRatio,
-                Qt.SmoothTransformation
-            )
+            scaled = pixmap.scaled(self.camera_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
             self.camera_label.setPixmap(scaled)
         except Exception as e:
             logger.error(f"显示帧错误: {e}")
 
     def update_status(self):
-        """更新系统状态信息：摄像头、人脸库、模糊统计"""
         try:
             status_text = []
-
             status_text.append("=== 摄像头状态 ===")
             camera_status = self.camera_manager.get_camera_status()
             if camera_status:
@@ -458,13 +450,21 @@ class MainWindow(QMainWindow):
                 loss_threshold=self.frame_loss_threshold,
             )
             if health.get('last_frame_gap_s') is not None:
-                gap = health['last_frame_gap_s']
-                status_text.append(f"最近帧间隔：{gap:.2f}s")
+                status_text.append(f"最近帧间隔：{health['last_frame_gap_s']:.2f}s")
             if health.get('delay_warning'):
                 status_text.append("⚠️ 摄像头画面存在延迟")
             if health.get('loss_warning'):
                 status_text.append("❌ 摄像头信号可能丢失，请检查连接")
             status_text.append(f"当前状态：{health.get('status', '未知')}")
+            current_health_status = health.get('status', '未知')
+            if self.last_health_status != current_health_status:
+                self.record_event('摄像头状态', f'状态变更为: {current_health_status}')
+                self.last_health_status = current_health_status
+
+            status_text.append("\n=== 推理状态 ===")
+            status_text.append(f"推理设备：{self.face_detector.actual_device}")
+            status_text.append(f"实时 FPS：{self.current_fps:.1f}")
+            status_text.append(f"检测抽样：每 {self.detection_interval} 帧检测一次")
 
             status_text.append("\n=== 人脸库 ===")
             status_text.append(f"已知人脸数量：{len(self.face_detector.known_faces)}")
@@ -475,14 +475,61 @@ class MainWindow(QMainWindow):
             status_text.append(f"当前模糊范围倍率：{self.blur_strength_factor:.2f}x")
             status_text.append(f"模糊形状：{'椭圆' if self.blur_shape == 'ellipse' else '矩形'}")
 
-            self.status_display.setText("\n".join(status_text))
+            status_text.append("\n=== 最近事件 ===")
+            if self.event_history:
+                for event in self.event_history[-4:]:
+                    status_text.append(f"[{event['time']}] {event['type']} - {event['message']}")
+            else:
+                status_text.append("暂无事件")
 
+            self.status_display.setText("\n".join(status_text))
         except Exception as e:
             logger.error(f"更新状态失败: {e}")
 
-    def closeEvent(self, event):
-        """程序退出时释放资源：停止摄像头、定时器"""
+    def record_event(self, event_type: str, message: str):
+        ts = time.strftime('%H:%M:%S')
+        item = {'time': ts, 'type': event_type, 'message': message}
+        self.event_history.append(item)
+        self.metrics['events_total'] += 1
+        if len(self.event_history) > 80:
+            self.event_history = self.event_history[-80:]
+        with self.event_log_path.open('a', encoding='utf-8') as f:
+            f.write(f"[{ts}] {event_type}: {message}\n")
+
+    def export_evaluation_report(self):
         try:
+            report_dir = Path(self.config.get('app', {}).get('log_dir', 'logs'))
+            report_dir.mkdir(parents=True, exist_ok=True)
+            report_path = report_dir / f"evaluation_{time.strftime('%Y%m%d_%H%M%S')}.csv"
+            frames = max(1, self.metrics['frames_total'])
+            uptime = max(1e-6, time.time() - self.metrics['started_at'])
+            avg_fps = self.metrics['frames_total'] / uptime
+            avg_faces = self.metrics['faces_total'] / frames
+            blur_ratio = self.metrics['blurred_total'] / max(1, self.metrics['faces_total'])
+
+            with report_path.open('w', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f)
+                writer.writerow(['metric', 'value'])
+                writer.writerow(['frames_total', self.metrics['frames_total']])
+                writer.writerow(['detect_frames', self.metrics['detect_frames']])
+                writer.writerow(['avg_fps', f"{avg_fps:.2f}"])
+                writer.writerow(['avg_faces_per_frame', f"{avg_faces:.3f}"])
+                writer.writerow(['blur_ratio', f"{blur_ratio:.3f}"])
+                writer.writerow(['recognition_threshold', self.face_detector.recognition_threshold])
+                writer.writerow(['blur_strength', self.blur_strength_factor])
+                writer.writerow(['detection_interval_frames', self.detection_interval])
+                writer.writerow(['device', self.face_detector.actual_device])
+                writer.writerow(['events_total', self.metrics['events_total']])
+
+            self.record_event('评估', f"导出评估报告: {report_path.name}")
+            QMessageBox.information(self, '导出成功', f'评估报告已导出:\n{report_path}')
+        except Exception as e:
+            logger.error(f"导出评估报告失败: {e}")
+            QMessageBox.warning(self, '导出失败', str(e))
+
+    def closeEvent(self, event):
+        try:
+            self.persist_runtime_config()
             self.camera_manager.stop_camera()
             self.update_timer.stop()
             event.accept()
@@ -491,20 +538,19 @@ class MainWindow(QMainWindow):
             event.accept()
 
     def apply_styles(self):
-        """统一设置应用的样式和色彩风格"""
         self.setStyleSheet("""
             QMainWindow {
-                background-color: #070b16;
+                background-color: #060a14;
                 color: #e2e8f0;
             }
             QLabel {
-                color: #e2e8f0;
+                color: #dbe7ff;
             }
             QLabel#sectionTitle {
-                font-size: 22px;
+                font-size: 24px;
                 font-weight: 700;
                 padding: 6px 0 2px 0;
-                color: #67e8f9;
+                color: #7dd3fc;
                 letter-spacing: 1px;
             }
             QLabel#subtitle {
@@ -512,62 +558,115 @@ class MainWindow(QMainWindow):
                 padding-bottom: 12px;
             }
             QLabel#hintLabel {
-                color: #cbd5f5;
+                color: #c7d2fe;
             }
             QLabel#statusText {
-                color: #e5e7eb;
+                color: #e2e8f0;
                 line-height: 1.5em;
+                background: rgba(15, 23, 42, 0.4);
+                border: 1px solid rgba(99, 102, 241, 0.22);
+                border-radius: 10px;
+                padding: 10px;
             }
             QLabel#cameraFeed {
-                background-color: rgba(15,23,42,0.75);
+                background-color: rgba(10, 18, 35, 0.92);
                 border-radius: 16px;
-                border: 2px solid rgba(14,165,233,0.4);
-                box-shadow: 0 0 18px rgba(6,182,212,0.35);
+                border: 2px solid rgba(34, 211, 238, 0.35);
             }
             QGroupBox {
-                border: 1px solid rgba(99,102,241,0.6);
+                border: 1px solid rgba(99, 102, 241, 0.45);
                 border-radius: 14px;
-                margin-top: 8px;
+                margin-top: 10px;
                 padding: 16px;
-                font-weight: 600;
-                background-color: rgba(24, 30, 54, 0.85);
-                box-shadow: inset 0 0 18px rgba(79,70,229,0.35);
+                font-weight: 700;
+                background-color: rgba(19, 26, 46, 0.86);
             }
             QGroupBox::title {
                 subcontrol-origin: margin;
                 subcontrol-position: top left;
                 padding: 0 10px;
-                color: #93c5fd;
-                background-color: transparent;
+                color: #bfdbfe;
+            }
+            QGroupBox#cameraControls {
+                background-color: rgba(17, 43, 68, 0.72);
+                border: 1px solid rgba(56, 189, 248, 0.5);
+            }
+            QGroupBox#processingControls {
+                background-color: rgba(39, 32, 72, 0.78);
+                border: 1px solid rgba(129, 140, 248, 0.58);
+            }
+            QGroupBox#systemStatusPanel {
+                background-color: rgba(20, 39, 56, 0.82);
+                border: 1px solid rgba(45, 212, 191, 0.52);
             }
             QPushButton {
-                background-color: qlineargradient(spread:pad, x1:0, y1:0, x2:1, y2:1, stop:0 #0ea5e9, stop:1 #6366f1);
-                border: 1px solid #67e8f9;
+                background-color: qlineargradient(
+                    spread:pad, x1:0, y1:0, x2:1, y2:1,
+                    stop:0 #0284c7, stop:1 #4f46e5
+                );
+                border: 1px solid rgba(165, 180, 252, 0.8);
                 border-radius: 12px;
-                padding: 12px 18px;
-                color: #ffffff;
+                padding: 10px 16px;
+                color: #f8fafc;
                 font-weight: 700;
-                letter-spacing: 0.5px;
-                box-shadow: 0 0 12px rgba(103,102,241,0.35);
             }
             QPushButton:hover {
-                border: 1px solid #a5b4fc;
-                box-shadow: 0 0 14px rgba(103,102,241,0.55);
+                background-color: qlineargradient(
+                    spread:pad, x1:0, y1:0, x2:1, y2:1,
+                    stop:0 #0ea5e9, stop:1 #6366f1
+                );
+                border: 1px solid #c4b5fd;
             }
             QPushButton:pressed {
-                background-color: qlineargradient(spread:pad, x1:0, y1:0, x2:1, y2:1, stop:0 #312e81, stop:1 #0b7285);
+                background-color: #312e81;
+            }
+            QPushButton#startButton {
+                background-color: qlineargradient(spread:pad, x1:0, y1:0, x2:1, y2:1, stop:0 #059669, stop:1 #0ea5a4);
+                border: 1px solid rgba(110, 231, 183, 0.85);
+            }
+            QPushButton#startButton:hover {
+                background-color: qlineargradient(spread:pad, x1:0, y1:0, x2:1, y2:1, stop:0 #10b981, stop:1 #14b8a6);
+            }
+            QPushButton#stopButton {
+                background-color: qlineargradient(spread:pad, x1:0, y1:0, x2:1, y2:1, stop:0 #be123c, stop:1 #7c3aed);
+                border: 1px solid rgba(251, 113, 133, 0.88);
+            }
+            QPushButton#stopButton:hover {
+                background-color: qlineargradient(spread:pad, x1:0, y1:0, x2:1, y2:1, stop:0 #e11d48, stop:1 #8b5cf6);
             }
             QSlider::groove:horizontal {
                 height: 8px;
-                background: rgba(99,102,241,0.35);
+                background: rgba(30, 41, 59, 0.88);
+                border: 1px solid rgba(129, 140, 248, 0.35);
+                border-radius: 4px;
+            }
+            QSlider::sub-page:horizontal {
+                background: qlineargradient(spread:pad, x1:0, y1:0, x2:1, y2:0, stop:0 #22d3ee, stop:1 #818cf8);
                 border-radius: 4px;
             }
             QSlider::handle:horizontal {
-                background: #67e8f9;
-                border: 1px solid #0ea5e9;
+                background: #f8fafc;
+                border: 2px solid #22d3ee;
                 width: 18px;
                 margin: -6px 0;
                 border-radius: 9px;
-                box-shadow: 0 0 10px rgba(14,165,233,0.65);
+            }
+            QRadioButton {
+                spacing: 8px;
+                color: #dbeafe;
+            }
+            QRadioButton::indicator {
+                width: 14px;
+                height: 14px;
+            }
+            QRadioButton::indicator:unchecked {
+                border: 1px solid rgba(148, 163, 184, 0.8);
+                background: rgba(15, 23, 42, 0.9);
+                border-radius: 7px;
+            }
+            QRadioButton::indicator:checked {
+                border: 1px solid #38bdf8;
+                background: #22d3ee;
+                border-radius: 7px;
             }
         """)
