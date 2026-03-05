@@ -18,12 +18,11 @@ import sys
 import yaml
 from pathlib import Path
 from loguru import logger
-from PyQt5.QtWidgets import QApplication, QSplashScreen, QDialog
+from PyQt5.QtWidgets import QApplication, QSplashScreen
 from PyQt5.QtGui import QPixmap
 from PyQt5.QtCore import Qt, QTimer
 
 from ui.main_window import MainWindow
-from ui.login_window import LoginWindow, ensure_user_config
 
 def load_config(config_path: str) -> dict:
     """
@@ -99,13 +98,6 @@ def main():
         setup_logging(config['app']['log_dir'])
 
         app = QApplication(sys.argv)
-        user_config_path = Path('config/user_config.json')
-        ensure_user_config(user_config_path)
-
-        login_dialog = LoginWindow(user_config_path, app_icon=config['app'].get('logo', ''))
-        if login_dialog.exec_() != QDialog.Accepted:
-            logger.info("用户取消登录，程序退出")
-            sys.exit(0)
 
         splash = show_splash_screen(config)
         splash.show()
