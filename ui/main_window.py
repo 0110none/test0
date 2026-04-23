@@ -50,6 +50,7 @@ class MainWindow(QMainWindow):
         self.blur_shape = processing_cfg.get('blur_shape', 'rectangle')
         self.blur_target = processing_cfg.get('blur_target', 'unknown')
         self.detection_interval = max(1, int(recognition_cfg.get('detection_interval_frames', 3)))
+        self.detection_scale = min(1.0, max(0.4, float(recognition_cfg.get('detection_scale', 0.75))))
         self.frame_index = 0
         self.cached_recognized_faces: List[Tuple[Tuple[int, int, int, int], Optional[str], float]] = []
         self.last_tick_ts = time.time()
@@ -404,11 +405,13 @@ class MainWindow(QMainWindow):
         )
         if should_detect:
             try:
-                faces = self.face_detector.detect_faces(frame)
+                detection_frame, scale_x, scale_y = self._prepare_detection_frame(frame)
+                faces = self.face_detector.detect_faces(detection_frame)
                 recognized_faces = self.face_detector.recognize_faces(faces)
                 self.cached_recognized_faces = []
                 for face, known_face, confidence in recognized_faces:
-                    clipped_bbox = self._clip_bbox(face.bbox, processed_frame.shape)
+                    scaled_bbox = self._rescale_bbox(face.bbox, scale_x, scale_y)
+                    clipped_bbox = self._clip_bbox(scaled_bbox, processed_frame.shape)
                     if clipped_bbox is None:
                         continue
                     self.cached_recognized_faces.append((clipped_bbox, known_face.name if known_face else None, confidence))
@@ -424,6 +427,20 @@ class MainWindow(QMainWindow):
                 if self._blur_face_region(processed_frame, bbox):
                     blurred_count += 1
         return processed_frame, len(self.cached_recognized_faces), blurred_count
+    def _prepare_detection_frame(self, frame: np.ndarray) -> Tuple[np.ndarray, float, float]:
+        if self.detection_scale >= 0.999:
+            return frame, 1.0, 1.0
+        resized = cv2.resize(frame, None, fx=self.detection_scale, fy=self.detection_scale, interpolation=cv2.INTER_LINEAR)
+        return resized, 1.0 / self.detection_scale, 1.0 / self.detection_scale
+    def _rescale_bbox(self, bbox: np.ndarray, scale_x: float, scale_y: float) -> np.ndarray:
+        if scale_x == 1.0 and scale_y == 1.0:
+            return bbox
+        scaled = np.array(bbox, dtype=np.float32).copy()
+        scaled[0] *= scale_x
+        scaled[2] *= scale_x
+        scaled[1] *= scale_y
+        scaled[3] *= scale_y
+        return scaled
     def _clip_bbox(self, bbox: np.ndarray, frame_shape: Tuple[int, int, int]) -> Optional[Tuple[int, int, int, int]]:
         try:
             h, w = frame_shape[:2]
@@ -480,7 +497,7 @@ class MainWindow(QMainWindow):
             if frame is None:
                 return
             pixmap = numpy_to_pixmap(frame)
-            scaled = pixmap.scaled(self.camera_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            scaled = pixmap.scaled(self.camera_label.size(), Qt.KeepAspectRatio, Qt.FastTransformation)
             self.camera_label.setPixmap(scaled)
         except Exception as e:
             logger.error(f"显示帧错误: {e}")

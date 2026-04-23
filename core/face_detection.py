@@ -40,10 +40,13 @@ class FaceDetector:
         self.known_faces: List[KnownFace] = []
 
     def _build_model(self, ctx_id: int) -> FaceAnalysis:
+        allowed_modules = ['detection', 'recognition']
+        if self.analysis_enabled:
+            allowed_modules.append('genderage')
         model = FaceAnalysis(
             name='buffalo_l',
             root='./models',
-            allowed_modules=['detection', 'recognition', 'genderage']
+            allowed_modules=allowed_modules
         )
         model.prepare(
             ctx_id=ctx_id,
