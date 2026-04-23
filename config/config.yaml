@@ -11,6 +11,7 @@ recognition:
   device: "cuda"  # 启动时自动尝试 CUDA，失败回退 CPU
   analysis_enabled: true
   detection_interval_frames: 3
+  detection_scale: 0.75
 
 processing:
   blur_strength: 1.0

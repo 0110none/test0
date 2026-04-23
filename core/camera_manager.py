@@ -129,6 +129,7 @@ class CameraManager:
             cap.set(cv2.CAP_PROP_FRAME_WIDTH, cam_config.width)
             cap.set(cv2.CAP_PROP_FRAME_HEIGHT, cam_config.height)
             cap.set(cv2.CAP_PROP_FPS, cam_config.fps)
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
             logger.info("摄像头打开成功")
 
